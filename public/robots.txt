@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://data-libur-nasional-indonesia.vercel.app/sitemap.xml

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hapilibur"
+version = "0.1.0"
+description = "Dataset & pustaka hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia (2026). Data murni JSON, bebas dipakai lintas bahasa."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Aditya Purnama", email = "306090472+kiraadityaa@users.noreply.github.com" }]
+keywords = ["indonesia", "libur", "holiday", "cuti-bersama", "imsakiyah", "ramadhan", "api", "json"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/kiraadityaa/data-libur-nasional-indonesia"
+Repository = "https://github.com/kiraadityaa/data-libur-nasional-indonesia"
+
+[project.scripts]
+hapilibur = "hapilibur.__main__:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["hapilibur"]
+
+[tool.setuptools.package-data]
+hapilibur = ["data/*.json"]

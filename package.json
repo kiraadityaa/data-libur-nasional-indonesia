@@ -1,0 +1,14 @@
+{
+  "name": "data-libur-nasional-indonesia",
+  "version": "0.1.0",
+  "private": true,
+  "description": "REST API hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia (2026).",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@vercel/node": "^3.2.0",
+    "typescript": "^5.5.0"
+  }
+}
