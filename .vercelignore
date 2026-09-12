@@ -1,0 +1,8 @@
+node_modules
+.vercel
+.env*
+pyproject.toml
+src/
+scripts/
+*.egg-info/
+__pycache__/
