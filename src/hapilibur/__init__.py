@@ -7,12 +7,16 @@ from .core import (  # noqa: F401
     CUTI_FILE,
     LIBUR_FILE,
     available_cities,
+    between,
     check,
+    cuti,
+    holiday_range,
     imsak,
     imsak_cities_available,
     is_holiday,
     is_libur,
     libur,
+    month,
     upcoming,
 )
 

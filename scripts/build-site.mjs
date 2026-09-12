@@ -1,4 +1,177 @@
-<!doctype html>
+#!/usr/bin/env node
+/**
+ * Generator halaman statis public/index.html dari data JSON kanonik (data/).
+ *
+ * Jalankan: npm run build:site
+ * - Membaca data/libur-nasional.json, data/cuti-bersama.json, data/imsak/*.json
+ * - Menyuntik snapshot (tabel, statistik, next-holiday) ke dalam template HTML
+ * - Keluaran: public/index.html
+ *
+ * Halaman yang dihasilkan tetap berfungsi statis; bagian interaktif memanggil
+ * /api/* saat disajikan melalui Vercel.
+ */
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const DATA = join(ROOT, "data");
+const OUT = join(ROOT, "public", "index.html");
+const SITE_URL = process.env.SITE_URL ?? "https://data-libur-nasional-indonesia.vercel.app";
+
+function readJson(rel) {
+  return JSON.parse(readFileSync(join(DATA, rel), "utf-8"));
+}
+
+const libur = readJson("libur-nasional.json");
+const cuti = readJson("cuti-bersama.json");
+
+const YEAR = Object.keys(libur.years).sort().pop();
+const liburYear = libur.years[YEAR]?.holidays ?? [];
+const cutiYear = cuti.years[YEAR]?.holidays ?? [];
+
+const merged = new Map();
+for (const e of liburYear) {
+  merged.set(e.date, { date: e.date, name: e.name, jenis: ["libur_nasional"] });
+}
+for (const e of cutiYear) {
+  const hit = merged.get(e.date);
+  if (hit) {
+    hit.name = `${hit.name} • ${e.name}`;
+    hit.jenis.push("cuti_bersama");
+  } else {
+    merged.set(e.date, { date: e.date, name: e.name, jenis: ["cuti_bersama"] });
+  }
+}
+const allEntries = [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
+
+const imsakCities = readdirSync(join(DATA, "imsak"))
+  .filter((f) => /\.json$/.test(f))
+  .map((f) => ({ slug: f.replace(".json", ""), payload: readJson(`imsak/${f}`) }))
+  .sort((a, b) => a.payload.city.localeCompare(b.payload.city));
+
+const MONTHS_ID = [
+  "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+  "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+];
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+
+function activeMonths() {
+  const seen = new Set();
+  for (const e of allEntries) seen.add(Number(e.date.slice(5, 7)));
+  return [...seen].sort((a, b) => a - b);
+}
+
+function monthEntries(m) {
+  const prefix = `${YEAR}-${String(m + 1).padStart(2, "0")}-`;
+  return allEntries.filter((e) => e.date.startsWith(prefix));
+}
+
+function dayName(iso) {
+  const d = new Date(iso + "T00:00:00Z");
+  return new Intl.DateTimeFormat("id-ID", { weekday: "long", timeZone: "UTC" }).format(d);
+}
+
+function rowsLibur() {
+  const out = [];
+  for (let m = 0; m < 12; m++) {
+    const entries = monthEntries(m);
+    if (entries.length === 0) continue;
+    const rows = entries
+      .map((e) =>
+        `<li><span class="mo-day">${dayName(e.date)}</span><span class="mo-date mono">${e.date}</span>` +
+        `<span class="mo-name">${e.name}</span>` +
+        `<span class="tags">${e.jenis
+          .map((j) => `<span class="tag ${j === "libur_nasional" ? "tag-l" : "tag-c"}">${j === "libur_nasional" ? "Libur nasional" : "Cuti bersama"}</span>`)
+          .join("")}</span></li>`
+      )
+      .join("");
+    out.push(
+      `<section class="mo" data-month="${m + 1}">` +
+        `<div class="mo-head"><h3>${MONTHS_ID[m]} ${YEAR}</h3><span class="mo-count">${entries.length} tanggal</span></div>` +
+        `<ul class="mo-list">${rows}</ul></section>`
+    );
+  }
+  return out.join("\n");
+}
+
+function rowsImsak(city) {
+  return city.payload.schedule
+    .map(
+      (s) =>
+        `<tr><td class="mono">${s.day}</td><td class="mono">${s.date}</td>` +
+        `<td class="mono">${s.imsak}</td><td class="mono">${s.subuh}</td><td class="mono">${s.zuhur}</td>` +
+        `<td class="mono">${s.ashar}</td><td class="mono">${s.magrib}</td><td class="mono">${s.isya}</td></tr>`
+    )
+    .join("\n");
+}
+
+function sourcesList() {
+  const seen = new Map();
+  for (const s of [...libur.sources, ...cuti.sources]) {
+    if (!seen.has(s.name)) seen.set(s.name, s);
+  }
+  return [...seen.values()]
+    .map(
+      (s) =>
+        `<li>${s.title ?? s.name} — <a href="${s.url}" rel="noopener">sumber resmi</a></li>`
+    )
+    .join("");
+}
+
+const snapshot = {
+  year: YEAR,
+  updated_at: libur.updated_at,
+  entries: allEntries,
+  imsak: imsakCities.map((c) => ({
+    city: c.payload.city,
+    province: c.payload.province,
+    timezone: c.payload.timezone,
+    hijri: c.payload.hijri,
+    year: c.payload.year,
+  })),
+};
+
+const flags = {
+  COUNT_LIBUR: liburYear.length,
+  COUNT_CUTI: cutiYear.length,
+  COUNT_KOTA: imsakCities.length,
+  COUNT_TOTAL: allEntries.length,
+  YEAR,
+  ROWS_LIBUR: rowsLibur(),
+  CITY_IMSAK_1: imsakCities[0] ?? null,
+  SNAPSHOT_JSON: JSON.stringify(snapshot).replace(/</g, "\\u003c"),
+  SITE_URL,
+  SOURCES: sourcesList(),
+  TOOLBAR: [
+    '<button data-month="0" aria-pressed="true">Semua</button>',
+    ...activeMonths().map((m) => `<button data-month="${m}" aria-pressed="false">${MONTHS_SHORT[m - 1]}</button>`),
+  ].join("\n    "),
+  IMSAK_TABS: imsakCities
+    .map((c) => `<button class="imtab" data-city="${c.slug}">${c.payload.city}</button>`)
+    .join("\n    "),
+  IMSAK_TABLES: imsakCities
+    .map(
+      (c) =>
+        `<table class="imtable" data-city-t="${c.slug}" hidden>` +
+        `<thead><tr><th>Hari</th><th>Tanggal</th><th>Imsak</th><th>Subuh</th><th>Zuhur</th><th>Ashar</th><th>Magrib</th><th>Isya</th></tr></thead>` +
+        `<tbody>${rowsImsak(c)}</tbody></table>`
+    )
+    .join("\n"),
+};
+
+console.log(`build-site: ${YEAR} · ${liburYear.length} libur · ${cutiYear.length} cuti · ${imsakCities.length} kota`);
+if (!flags.CITY_IMSAK_1) {
+  throw new Error("Tidak ada data imsakiyah untuk disuntikkan.");
+}
+
+const html = render(flags);
+writeFileSync(OUT, html, "utf-8");
+console.log(`wrote public/index.html (${(html.length / 1024).toFixed(1)} KiB)`);
+
+function render(f) {
+  const c1 = f.CITY_IMSAK_1.payload;
+  return `<!doctype html>
 <html lang="id" data-theme="dark">
 <head>
 <meta charset="utf-8" />
@@ -6,17 +179,17 @@
 <title>Libur Nasional Indonesia — API Hari Libur, Cuti Bersama & Imsakiyah</title>
 <meta name="description" content="REST API gratis hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia. Data resmi SKB 3 Menteri dan Bimas Islam Kemenag, format JSON murni, tanpa kunci API." />
 <meta name="robots" content="index, follow" />
-<link rel="canonical" href="https://data-libur-nasional-indonesia.vercel.app/" />
+<link rel="canonical" href="${f.SITE_URL}/" />
 <meta property="og:title" content="Libur Nasional Indonesia — API hari libur, cuti bersama & imsakiyah" />
-<meta property="og:description" content="Data resmi 2026 dalam satu API. JSON murni, gratis, tanpa kunci." />
+<meta property="og:description" content="Data resmi ${f.YEAR} dalam satu API. JSON murni, gratis, tanpa kunci." />
 <meta property="og:type" content="website" />
-<meta property="og:url" content="https://data-libur-nasional-indonesia.vercel.app/" />
+<meta property="og:url" content="${f.SITE_URL}/" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23f7f7f5'/%3E%3Crect x='4' y='6' width='16' height='4' rx='1' fill='%23e1451f'/%3E%3Crect x='4' y='14' width='16' height='4' rx='1' fill='%23e1451f'/%3E%3C/svg%3E" />
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"Dataset","name":"Data libur nasional, cuti bersama, dan imsakiyah Indonesia","description":"Hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia","url":"https://data-libur-nasional-indonesia.vercel.app/","license":"https://opensource.org/licenses/MIT","includedInDataCatalog":{"@type":"DataCatalog","name":"SKB 3 Menteri & Bimas Islam Kemenag"}}
+{"@context":"https://schema.org","@type":"Dataset","name":"Data libur nasional, cuti bersama, dan imsakiyah Indonesia","description":"Hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia","url":"${f.SITE_URL}/","license":"https://opensource.org/licenses/MIT","includedInDataCatalog":{"@type":"DataCatalog","name":"SKB 3 Menteri & Bimas Islam Kemenag"}}
 </script>
 <script>
-window.__DATA__ = {"year":"2026","updated_at":"2026-09-12T00:00:00Z","entries":[{"date":"2026-01-01","name":"Tahun Baru 2026 Masehi","jenis":["libur_nasional"]},{"date":"2026-01-16","name":"Isra Mikraj Nabi Muhammad SAW","jenis":["libur_nasional"]},{"date":"2026-02-16","name":"Cuti Bersama Tahun Baru Imlek 2577 Kongzili","jenis":["cuti_bersama"]},{"date":"2026-02-17","name":"Tahun Baru Imlek 2577 Kongzili","jenis":["libur_nasional"]},{"date":"2026-03-18","name":"Cuti Bersama Hari Suci Nyepi","jenis":["cuti_bersama"]},{"date":"2026-03-19","name":"Hari Suci Nyepi (Tahun Baru Saka 1948)","jenis":["libur_nasional"]},{"date":"2026-03-20","name":"Cuti Bersama Hari Raya Idul Fitri 1447 H","jenis":["cuti_bersama"]},{"date":"2026-03-21","name":"Hari Raya Idul Fitri 1447 H","jenis":["libur_nasional"]},{"date":"2026-03-22","name":"Hari Raya Idul Fitri 1447 H","jenis":["libur_nasional"]},{"date":"2026-03-23","name":"Cuti Bersama Hari Raya Idul Fitri 1447 H","jenis":["cuti_bersama"]},{"date":"2026-03-24","name":"Cuti Bersama Hari Raya Idul Fitri 1447 H","jenis":["cuti_bersama"]},{"date":"2026-04-03","name":"Wafat Yesus Kristus","jenis":["libur_nasional"]},{"date":"2026-04-05","name":"Hari Kebangkitan Yesus Kristus (Paskah)","jenis":["libur_nasional"]},{"date":"2026-05-01","name":"Hari Buruh Internasional","jenis":["libur_nasional"]},{"date":"2026-05-14","name":"Kenaikan Yesus Kristus","jenis":["libur_nasional"]},{"date":"2026-05-15","name":"Cuti Bersama Kenaikan Yesus Kristus","jenis":["cuti_bersama"]},{"date":"2026-05-27","name":"Hari Raya Idul Adha 1447 H","jenis":["libur_nasional"]},{"date":"2026-05-28","name":"Cuti Bersama Hari Raya Idul Adha 1447 H","jenis":["cuti_bersama"]},{"date":"2026-05-31","name":"Hari Raya Waisak 2570 BE","jenis":["libur_nasional"]},{"date":"2026-06-01","name":"Hari Lahir Pancasila","jenis":["libur_nasional"]},{"date":"2026-06-16","name":"Tahun Baru Islam 1448 H (1 Muharam)","jenis":["libur_nasional"]},{"date":"2026-08-17","name":"Hari Proklamasi Kemerdekaan RI","jenis":["libur_nasional"]},{"date":"2026-08-25","name":"Maulid Nabi Muhammad SAW","jenis":["libur_nasional"]},{"date":"2026-12-24","name":"Cuti Bersama Kelahiran Yesus Kristus","jenis":["cuti_bersama"]},{"date":"2026-12-25","name":"Kelahiran Yesus Kristus","jenis":["libur_nasional"]}],"imsak":[{"city":"Jakarta","province":"DKI Jakarta","timezone":"WIB","hijri":"1447 H","year":2026},{"city":"Surabaya","province":"Jawa Timur","timezone":"WIB","hijri":"1447 H","year":2026}]};
+window.__DATA__ = ${f.SNAPSHOT_JSON};
 </script>
 <style>
 :root{
@@ -212,7 +385,7 @@ html:not(.js) .rv{opacity:1;transform:none}
   </a>
   <nav class="nav" aria-label="Navigasi utama">
     <a href="#api">API</a>
-    <a href="#data">Libur 2026</a>
+    <a href="#data">Libur ${f.YEAR}</a>
     <a href="#imsak">Imsakiyah</a>
     <a href="#pakai">Pakai</a>
     <button class="theme-btn" id="themeBtn" aria-label="Ganti tema" title="Ganti tema">◐</button>
@@ -228,7 +401,7 @@ html:not(.js) .rv{opacity:1;transform:none}
     <p class="sub">Hari libur, cuti bersama, dan jadwal imsakiyah — JSON murni, gratis, tanpa kunci API. Bisa dipakai dari bahasa pemrograman apa pun.</p>
     <div class="cta">
       <a class="btn btn-p" href="#api">Coba API</a>
-      <a class="btn btn-g" href="https://data-libur-nasional-indonesia.vercel.app/data/libur-nasional.json">Unduh JSON</a>
+      <a class="btn btn-g" href="${f.SITE_URL}/data/libur-nasional.json">Unduh JSON</a>
     </div>
   </div>
   <aside class="hero-card rv in" aria-label="Libur berikutnya">
@@ -241,15 +414,15 @@ html:not(.js) .rv{opacity:1;transform:none}
       <div class="cd"><b id="cdM">–</b><s>Menit</s></div>
       <div class="cd"><b id="cdS">–</b><s>Detik</s></div>
     </div>
-    <div class="next-meta"><span id="nextSources">Data diperbarui 2026</span><a href="https://data-libur-nasional-indonesia.vercel.app/api/libur.ics" target="_blank" rel="noopener">Subscribe .ics →</a></div>
+    <div class="next-meta"><span id="nextSources">Data diperbarui ${f.YEAR}</span><a href="${f.SITE_URL}/api/libur.ics" target="_blank" rel="noopener">Subscribe .ics →</a></div>
   </aside>
 </section>
 
 <div class="stats rv">
-  <div class="stat"><b>17</b><span>hari libur nasional</span><span class="m">tahun 2026</span></div>
-  <div class="stat"><b>8</b><span>cuti bersama</span><span class="m">SKB 3 Menteri</span></div>
-  <div class="stat"><b>2</b><span>kota imsakiyah</span><span class="m">Bimas Islam</span></div>
-  <div class="stat"><b>25</b><span>total tanggal libur</span><span class="m">libur + cuti</span></div>
+  <div class="stat"><b>${f.COUNT_LIBUR}</b><span>hari libur nasional</span><span class="m">tahun ${f.YEAR}</span></div>
+  <div class="stat"><b>${f.COUNT_CUTI}</b><span>cuti bersama</span><span class="m">SKB 3 Menteri</span></div>
+  <div class="stat"><b>${f.COUNT_KOTA}</b><span>kota imsakiyah</span><span class="m">Bimas Islam</span></div>
+  <div class="stat"><b>${f.COUNT_TOTAL}</b><span>total tanggal libur</span><span class="m">libur + cuti</span></div>
 </div>
 
 <section id="api">
@@ -302,7 +475,7 @@ html:not(.js) .rv{opacity:1;transform:none}
           <div class="field">
             <label for="dateInput">Tanggal</label>
             <input id="dateInput" type="date" value="2026-08-17" list="dateList" />
-            <datalist id="dateList"><option value="2026-01-01"></option><option value="2026-01-16"></option><option value="2026-02-16"></option><option value="2026-02-17"></option><option value="2026-03-18"></option><option value="2026-03-19"></option><option value="2026-03-20"></option><option value="2026-03-21"></option><option value="2026-03-22"></option><option value="2026-03-23"></option><option value="2026-03-24"></option><option value="2026-04-03"></option><option value="2026-04-05"></option><option value="2026-05-01"></option><option value="2026-05-14"></option><option value="2026-05-15"></option><option value="2026-05-27"></option><option value="2026-05-28"></option><option value="2026-05-31"></option><option value="2026-06-01"></option><option value="2026-06-16"></option><option value="2026-08-17"></option><option value="2026-08-25"></option><option value="2026-12-24"></option><option value="2026-12-25"></option></datalist>
+            <datalist id="dateList">${allEntries.map((e) => `<option value="${e.date}"></option>`).join("")}</datalist>
           </div>
           <div class="field">
             <label for="dateMode">Mode</label>
@@ -321,11 +494,11 @@ html:not(.js) .rv{opacity:1;transform:none}
         <div class="ctl">
           <div class="field">
             <label for="imsakCity">Kota</label>
-            <select id="imsakCity"><option value="jakarta-2026">Jakarta — DKI Jakarta</option><option value="surabaya-2026">Surabaya — Jawa Timur</option></select>
+            <select id="imsakCity">${imsakCities.map((c) => `<option value="${c.slug}">${c.payload.city} — ${c.payload.province}</option>`).join("")}</select>
           </div>
           <div class="field">
             <label for="imsakYear">Tahun</label>
-            <select id="imsakYear"><option>2026</option></select>
+            <select id="imsakYear"><option>${f.YEAR}</option></select>
           </div>
           <button class="btn btn-p" id="imsakGo" type="button">Kirim</button>
         </div>
@@ -344,7 +517,7 @@ html:not(.js) .rv{opacity:1;transform:none}
           </div>
           <div class="field">
             <label for="icsYear">Tahun</label>
-            <select id="icsYear"><option>2026</option></select>
+            <select id="icsYear"><option>${f.YEAR}</option></select>
           </div>
           <button class="btn btn-p" id="icsGo" type="button">Unduh .ics</button>
         </div>
@@ -357,107 +530,32 @@ html:not(.js) .rv{opacity:1;transform:none}
 
 <section id="data">
   <div class="sec-head rv">
-    <h2>Libur nasional &amp; cuti bersama 2026</h2>
+    <h2>Libur nasional &amp; cuti bersama ${f.YEAR}</h2>
     <p>Bulan berwarna menandakan ada tanggal libur. Filter untuk menyempitkan.</p>
   </div>
   <div class="toolbar rv" id="monthFilter" role="group" aria-label="Filter bulan">
-    <button data-month="0" aria-pressed="true">Semua</button>
-    <button data-month="1" aria-pressed="false">Jan</button>
-    <button data-month="2" aria-pressed="false">Feb</button>
-    <button data-month="3" aria-pressed="false">Mar</button>
-    <button data-month="4" aria-pressed="false">Apr</button>
-    <button data-month="5" aria-pressed="false">Mei</button>
-    <button data-month="6" aria-pressed="false">Jun</button>
-    <button data-month="8" aria-pressed="false">Agu</button>
-    <button data-month="12" aria-pressed="false">Des</button>
+    ${f.TOOLBAR}
   </div>
   <div id="liburList" class="rv">
-<section class="mo" data-month="1"><div class="mo-head"><h3>Januari 2026</h3><span class="mo-count">2 tanggal</span></div><ul class="mo-list"><li><span class="mo-day">Kamis</span><span class="mo-date mono">2026-01-01</span><span class="mo-name">Tahun Baru 2026 Masehi</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Jumat</span><span class="mo-date mono">2026-01-16</span><span class="mo-name">Isra Mikraj Nabi Muhammad SAW</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li></ul></section>
-<section class="mo" data-month="2"><div class="mo-head"><h3>Februari 2026</h3><span class="mo-count">2 tanggal</span></div><ul class="mo-list"><li><span class="mo-day">Senin</span><span class="mo-date mono">2026-02-16</span><span class="mo-name">Cuti Bersama Tahun Baru Imlek 2577 Kongzili</span><span class="tags"><span class="tag tag-c">Cuti bersama</span></span></li><li><span class="mo-day">Selasa</span><span class="mo-date mono">2026-02-17</span><span class="mo-name">Tahun Baru Imlek 2577 Kongzili</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li></ul></section>
-<section class="mo" data-month="3"><div class="mo-head"><h3>Maret 2026</h3><span class="mo-count">7 tanggal</span></div><ul class="mo-list"><li><span class="mo-day">Rabu</span><span class="mo-date mono">2026-03-18</span><span class="mo-name">Cuti Bersama Hari Suci Nyepi</span><span class="tags"><span class="tag tag-c">Cuti bersama</span></span></li><li><span class="mo-day">Kamis</span><span class="mo-date mono">2026-03-19</span><span class="mo-name">Hari Suci Nyepi (Tahun Baru Saka 1948)</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Jumat</span><span class="mo-date mono">2026-03-20</span><span class="mo-name">Cuti Bersama Hari Raya Idul Fitri 1447 H</span><span class="tags"><span class="tag tag-c">Cuti bersama</span></span></li><li><span class="mo-day">Sabtu</span><span class="mo-date mono">2026-03-21</span><span class="mo-name">Hari Raya Idul Fitri 1447 H</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Minggu</span><span class="mo-date mono">2026-03-22</span><span class="mo-name">Hari Raya Idul Fitri 1447 H</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Senin</span><span class="mo-date mono">2026-03-23</span><span class="mo-name">Cuti Bersama Hari Raya Idul Fitri 1447 H</span><span class="tags"><span class="tag tag-c">Cuti bersama</span></span></li><li><span class="mo-day">Selasa</span><span class="mo-date mono">2026-03-24</span><span class="mo-name">Cuti Bersama Hari Raya Idul Fitri 1447 H</span><span class="tags"><span class="tag tag-c">Cuti bersama</span></span></li></ul></section>
-<section class="mo" data-month="4"><div class="mo-head"><h3>April 2026</h3><span class="mo-count">2 tanggal</span></div><ul class="mo-list"><li><span class="mo-day">Jumat</span><span class="mo-date mono">2026-04-03</span><span class="mo-name">Wafat Yesus Kristus</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Minggu</span><span class="mo-date mono">2026-04-05</span><span class="mo-name">Hari Kebangkitan Yesus Kristus (Paskah)</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li></ul></section>
-<section class="mo" data-month="5"><div class="mo-head"><h3>Mei 2026</h3><span class="mo-count">6 tanggal</span></div><ul class="mo-list"><li><span class="mo-day">Jumat</span><span class="mo-date mono">2026-05-01</span><span class="mo-name">Hari Buruh Internasional</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Kamis</span><span class="mo-date mono">2026-05-14</span><span class="mo-name">Kenaikan Yesus Kristus</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Jumat</span><span class="mo-date mono">2026-05-15</span><span class="mo-name">Cuti Bersama Kenaikan Yesus Kristus</span><span class="tags"><span class="tag tag-c">Cuti bersama</span></span></li><li><span class="mo-day">Rabu</span><span class="mo-date mono">2026-05-27</span><span class="mo-name">Hari Raya Idul Adha 1447 H</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Kamis</span><span class="mo-date mono">2026-05-28</span><span class="mo-name">Cuti Bersama Hari Raya Idul Adha 1447 H</span><span class="tags"><span class="tag tag-c">Cuti bersama</span></span></li><li><span class="mo-day">Minggu</span><span class="mo-date mono">2026-05-31</span><span class="mo-name">Hari Raya Waisak 2570 BE</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li></ul></section>
-<section class="mo" data-month="6"><div class="mo-head"><h3>Juni 2026</h3><span class="mo-count">2 tanggal</span></div><ul class="mo-list"><li><span class="mo-day">Senin</span><span class="mo-date mono">2026-06-01</span><span class="mo-name">Hari Lahir Pancasila</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Selasa</span><span class="mo-date mono">2026-06-16</span><span class="mo-name">Tahun Baru Islam 1448 H (1 Muharam)</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li></ul></section>
-<section class="mo" data-month="8"><div class="mo-head"><h3>Agustus 2026</h3><span class="mo-count">2 tanggal</span></div><ul class="mo-list"><li><span class="mo-day">Senin</span><span class="mo-date mono">2026-08-17</span><span class="mo-name">Hari Proklamasi Kemerdekaan RI</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li><li><span class="mo-day">Selasa</span><span class="mo-date mono">2026-08-25</span><span class="mo-name">Maulid Nabi Muhammad SAW</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li></ul></section>
-<section class="mo" data-month="12"><div class="mo-head"><h3>Desember 2026</h3><span class="mo-count">2 tanggal</span></div><ul class="mo-list"><li><span class="mo-day">Kamis</span><span class="mo-date mono">2026-12-24</span><span class="mo-name">Cuti Bersama Kelahiran Yesus Kristus</span><span class="tags"><span class="tag tag-c">Cuti bersama</span></span></li><li><span class="mo-day">Jumat</span><span class="mo-date mono">2026-12-25</span><span class="mo-name">Kelahiran Yesus Kristus</span><span class="tags"><span class="tag tag-l">Libur nasional</span></span></li></ul></section>
+${f.ROWS_LIBUR}
   </div>
 </section>
 
 <section id="imsak">
   <div class="sec-head rv">
     <h2>Imsakiyah</h2>
-    <p>Jadwal 30 hari Ramadan 2026 dari Bimas Islam Kemenag. Waktu berformat <code>HH:MM</code> zona lokal kota masing-masing.</p>
+    <p>Jadwal 30 hari Ramadan ${f.YEAR} dari Bimas Islam Kemenag. Waktu berformat <code>HH:MM</code> zona lokal kota masing-masing.</p>
   </div>
   <div class="imwrap rv">
     <div class="imhead">
       <div>
-        <h3 id="imTitle">Jakarta</h3>
-        <span class="muted" id="imSub">DKI Jakarta · WIB · 1447 H</span>
+        <h3 id="imTitle">${c1.city}</h3>
+        <span class="muted" id="imSub">${c1.province} · ${c1.timezone} · ${c1.hijri}</span>
       </div>
-      <div class="imtabs" aria-label="Pilih kota"><button class="imtab" data-city="jakarta-2026">Jakarta</button>
-    <button class="imtab" data-city="surabaya-2026">Surabaya</button></div>
+      <div class="imtabs" aria-label="Pilih kota">${f.IMSAK_TABS}</div>
     </div>
     <div class="imgoright">
-<table class="imtable" data-city-t="jakarta-2026" hidden><thead><tr><th>Hari</th><th>Tanggal</th><th>Imsak</th><th>Subuh</th><th>Zuhur</th><th>Ashar</th><th>Magrib</th><th>Isya</th></tr></thead><tbody><tr><td class="mono">1</td><td class="mono">2026-02-19</td><td class="mono">04:31</td><td class="mono">04:41</td><td class="mono">12:10</td><td class="mono">15:20</td><td class="mono">18:18</td><td class="mono">19:28</td></tr>
-<tr><td class="mono">2</td><td class="mono">2026-02-20</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:10</td><td class="mono">15:19</td><td class="mono">18:18</td><td class="mono">19:28</td></tr>
-<tr><td class="mono">3</td><td class="mono">2026-02-21</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:10</td><td class="mono">15:19</td><td class="mono">18:17</td><td class="mono">19:27</td></tr>
-<tr><td class="mono">4</td><td class="mono">2026-02-22</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:10</td><td class="mono">15:18</td><td class="mono">18:17</td><td class="mono">19:27</td></tr>
-<tr><td class="mono">5</td><td class="mono">2026-02-23</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:10</td><td class="mono">15:17</td><td class="mono">18:17</td><td class="mono">19:26</td></tr>
-<tr><td class="mono">6</td><td class="mono">2026-02-24</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:09</td><td class="mono">15:16</td><td class="mono">18:17</td><td class="mono">19:26</td></tr>
-<tr><td class="mono">7</td><td class="mono">2026-02-25</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:09</td><td class="mono">15:15</td><td class="mono">18:16</td><td class="mono">19:26</td></tr>
-<tr><td class="mono">8</td><td class="mono">2026-02-26</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:09</td><td class="mono">15:15</td><td class="mono">18:16</td><td class="mono">19:25</td></tr>
-<tr><td class="mono">9</td><td class="mono">2026-02-27</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:09</td><td class="mono">15:14</td><td class="mono">18:16</td><td class="mono">19:25</td></tr>
-<tr><td class="mono">10</td><td class="mono">2026-02-28</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:09</td><td class="mono">15:13</td><td class="mono">18:15</td><td class="mono">19:24</td></tr>
-<tr><td class="mono">11</td><td class="mono">2026-03-01</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:09</td><td class="mono">15:12</td><td class="mono">18:15</td><td class="mono">19:24</td></tr>
-<tr><td class="mono">12</td><td class="mono">2026-03-02</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:08</td><td class="mono">15:11</td><td class="mono">18:14</td><td class="mono">19:24</td></tr>
-<tr><td class="mono">13</td><td class="mono">2026-03-03</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:08</td><td class="mono">15:10</td><td class="mono">18:14</td><td class="mono">19:23</td></tr>
-<tr><td class="mono">14</td><td class="mono">2026-03-04</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:08</td><td class="mono">15:09</td><td class="mono">18:14</td><td class="mono">19:23</td></tr>
-<tr><td class="mono">15</td><td class="mono">2026-03-05</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:08</td><td class="mono">15:08</td><td class="mono">18:13</td><td class="mono">19:22</td></tr>
-<tr><td class="mono">16</td><td class="mono">2026-03-06</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:07</td><td class="mono">15:08</td><td class="mono">18:13</td><td class="mono">19:22</td></tr>
-<tr><td class="mono">17</td><td class="mono">2026-03-07</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:07</td><td class="mono">15:09</td><td class="mono">18:12</td><td class="mono">19:21</td></tr>
-<tr><td class="mono">18</td><td class="mono">2026-03-08</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:07</td><td class="mono">15:09</td><td class="mono">18:12</td><td class="mono">19:21</td></tr>
-<tr><td class="mono">19</td><td class="mono">2026-03-09</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:07</td><td class="mono">15:10</td><td class="mono">18:12</td><td class="mono">19:20</td></tr>
-<tr><td class="mono">20</td><td class="mono">2026-03-10</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:06</td><td class="mono">15:10</td><td class="mono">18:11</td><td class="mono">19:20</td></tr>
-<tr><td class="mono">21</td><td class="mono">2026-03-11</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:06</td><td class="mono">15:10</td><td class="mono">18:11</td><td class="mono">19:19</td></tr>
-<tr><td class="mono">22</td><td class="mono">2026-03-12</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:06</td><td class="mono">15:11</td><td class="mono">18:10</td><td class="mono">19:19</td></tr>
-<tr><td class="mono">23</td><td class="mono">2026-03-13</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:06</td><td class="mono">15:11</td><td class="mono">18:10</td><td class="mono">19:18</td></tr>
-<tr><td class="mono">24</td><td class="mono">2026-03-14</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:05</td><td class="mono">15:11</td><td class="mono">18:09</td><td class="mono">19:18</td></tr>
-<tr><td class="mono">25</td><td class="mono">2026-03-15</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:05</td><td class="mono">15:12</td><td class="mono">18:09</td><td class="mono">19:17</td></tr>
-<tr><td class="mono">26</td><td class="mono">2026-03-16</td><td class="mono">04:33</td><td class="mono">04:43</td><td class="mono">12:05</td><td class="mono">15:12</td><td class="mono">18:09</td><td class="mono">19:17</td></tr>
-<tr><td class="mono">27</td><td class="mono">2026-03-17</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:05</td><td class="mono">15:12</td><td class="mono">18:08</td><td class="mono">19:16</td></tr>
-<tr><td class="mono">28</td><td class="mono">2026-03-18</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:04</td><td class="mono">15:12</td><td class="mono">18:08</td><td class="mono">19:16</td></tr>
-<tr><td class="mono">29</td><td class="mono">2026-03-19</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:04</td><td class="mono">15:13</td><td class="mono">18:07</td><td class="mono">19:16</td></tr>
-<tr><td class="mono">30</td><td class="mono">2026-03-20</td><td class="mono">04:32</td><td class="mono">04:42</td><td class="mono">12:04</td><td class="mono">15:13</td><td class="mono">18:07</td><td class="mono">19:15</td></tr></tbody></table>
-<table class="imtable" data-city-t="surabaya-2026" hidden><thead><tr><th>Hari</th><th>Tanggal</th><th>Imsak</th><th>Subuh</th><th>Zuhur</th><th>Ashar</th><th>Magrib</th><th>Isya</th></tr></thead><tbody><tr><td class="mono">1</td><td class="mono">2026-02-19</td><td class="mono">04:07</td><td class="mono">04:17</td><td class="mono">11:46</td><td class="mono">14:55</td><td class="mono">17:55</td><td class="mono">19:06</td></tr>
-<tr><td class="mono">2</td><td class="mono">2026-02-20</td><td class="mono">04:07</td><td class="mono">04:17</td><td class="mono">11:46</td><td class="mono">14:54</td><td class="mono">17:55</td><td class="mono">19:05</td></tr>
-<tr><td class="mono">3</td><td class="mono">2026-02-21</td><td class="mono">04:07</td><td class="mono">04:17</td><td class="mono">11:46</td><td class="mono">14:54</td><td class="mono">17:55</td><td class="mono">19:05</td></tr>
-<tr><td class="mono">4</td><td class="mono">2026-02-22</td><td class="mono">04:07</td><td class="mono">04:17</td><td class="mono">11:46</td><td class="mono">14:53</td><td class="mono">17:54</td><td class="mono">19:04</td></tr>
-<tr><td class="mono">5</td><td class="mono">2026-02-23</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:46</td><td class="mono">14:52</td><td class="mono">17:54</td><td class="mono">19:04</td></tr>
-<tr><td class="mono">6</td><td class="mono">2026-02-24</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:46</td><td class="mono">14:51</td><td class="mono">17:54</td><td class="mono">19:04</td></tr>
-<tr><td class="mono">7</td><td class="mono">2026-02-25</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:46</td><td class="mono">14:50</td><td class="mono">17:53</td><td class="mono">19:03</td></tr>
-<tr><td class="mono">8</td><td class="mono">2026-02-26</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:46</td><td class="mono">14:49</td><td class="mono">17:53</td><td class="mono">19:03</td></tr>
-<tr><td class="mono">9</td><td class="mono">2026-02-27</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:45</td><td class="mono">14:48</td><td class="mono">17:53</td><td class="mono">19:02</td></tr>
-<tr><td class="mono">10</td><td class="mono">2026-02-28</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:45</td><td class="mono">14:47</td><td class="mono">17:52</td><td class="mono">19:02</td></tr>
-<tr><td class="mono">11</td><td class="mono">2026-03-01</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:45</td><td class="mono">14:46</td><td class="mono">17:52</td><td class="mono">19:01</td></tr>
-<tr><td class="mono">12</td><td class="mono">2026-03-02</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:45</td><td class="mono">14:45</td><td class="mono">17:51</td><td class="mono">19:01</td></tr>
-<tr><td class="mono">13</td><td class="mono">2026-03-03</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:45</td><td class="mono">14:46</td><td class="mono">17:51</td><td class="mono">19:00</td></tr>
-<tr><td class="mono">14</td><td class="mono">2026-03-04</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:44</td><td class="mono">14:46</td><td class="mono">17:51</td><td class="mono">19:00</td></tr>
-<tr><td class="mono">15</td><td class="mono">2026-03-05</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:44</td><td class="mono">14:47</td><td class="mono">17:50</td><td class="mono">18:59</td></tr>
-<tr><td class="mono">16</td><td class="mono">2026-03-06</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:44</td><td class="mono">14:47</td><td class="mono">17:50</td><td class="mono">18:59</td></tr>
-<tr><td class="mono">17</td><td class="mono">2026-03-07</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:44</td><td class="mono">14:48</td><td class="mono">17:49</td><td class="mono">18:58</td></tr>
-<tr><td class="mono">18</td><td class="mono">2026-03-08</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:43</td><td class="mono">14:48</td><td class="mono">17:49</td><td class="mono">18:58</td></tr>
-<tr><td class="mono">19</td><td class="mono">2026-03-09</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:43</td><td class="mono">14:48</td><td class="mono">17:48</td><td class="mono">18:57</td></tr>
-<tr><td class="mono">20</td><td class="mono">2026-03-10</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:43</td><td class="mono">14:49</td><td class="mono">17:48</td><td class="mono">18:57</td></tr>
-<tr><td class="mono">21</td><td class="mono">2026-03-11</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:43</td><td class="mono">14:49</td><td class="mono">17:48</td><td class="mono">18:56</td></tr>
-<tr><td class="mono">22</td><td class="mono">2026-03-12</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:42</td><td class="mono">14:49</td><td class="mono">17:47</td><td class="mono">18:56</td></tr>
-<tr><td class="mono">23</td><td class="mono">2026-03-13</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:42</td><td class="mono">14:49</td><td class="mono">17:47</td><td class="mono">18:55</td></tr>
-<tr><td class="mono">24</td><td class="mono">2026-03-14</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:42</td><td class="mono">14:50</td><td class="mono">17:46</td><td class="mono">18:55</td></tr>
-<tr><td class="mono">25</td><td class="mono">2026-03-15</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:42</td><td class="mono">14:50</td><td class="mono">17:46</td><td class="mono">18:54</td></tr>
-<tr><td class="mono">26</td><td class="mono">2026-03-16</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:41</td><td class="mono">14:50</td><td class="mono">17:45</td><td class="mono">18:54</td></tr>
-<tr><td class="mono">27</td><td class="mono">2026-03-17</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:41</td><td class="mono">14:50</td><td class="mono">17:45</td><td class="mono">18:53</td></tr>
-<tr><td class="mono">28</td><td class="mono">2026-03-18</td><td class="mono">04:09</td><td class="mono">04:19</td><td class="mono">11:41</td><td class="mono">14:51</td><td class="mono">17:44</td><td class="mono">18:53</td></tr>
-<tr><td class="mono">29</td><td class="mono">2026-03-19</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:40</td><td class="mono">14:51</td><td class="mono">17:44</td><td class="mono">18:52</td></tr>
-<tr><td class="mono">30</td><td class="mono">2026-03-20</td><td class="mono">04:08</td><td class="mono">04:18</td><td class="mono">11:40</td><td class="mono">14:51</td><td class="mono">17:43</td><td class="mono">18:52</td></tr></tbody></table>
+${f.IMSAK_TABLES}
     </div>
   </div>
 </section>
@@ -475,8 +573,9 @@ html:not(.js) .rv{opacity:1;transform:none}
         <li>Task scheduler / cron</li>
       </ul>
       <div class="snippet">
-<pre>curl "https://data-libur-nasional-indonesia.vercel.app/api/libur?date=2026-08-17"   | python3 -m json.tool</pre>
-        <button type="button" data-copy="Semua libur setahun:&#10;curl https://data-libur-nasional-indonesia.vercel.app/api/libur?year=2026">Salin</button>
+<pre>curl "${f.SITE_URL}/api/libur?date=2026-08-17" \
+  | python3 -m json.tool</pre>
+        <button type="button" data-copy="Semua libur setahun:&#10;curl ${f.SITE_URL}/api/libur?year=${f.YEAR}">Salin</button>
       </div>
     </div>
     <div class="int-card">
@@ -502,7 +601,7 @@ upcoming()               # libur terdekat</pre>
 <pre>const r = await fetch("/api/libur?date=2026-08-17");
 const data = await r.json();
 // { is_holiday: true, ... }</pre>
-        <button type="button" data-copy="const r = await fetch('https://data-libur-nasional-indonesia.vercel.app/api/libur?date=2026-08-17'); const data = await r.json(); console.log(data)">Salin</button>
+        <button type="button" data-copy="const r = await fetch('${f.SITE_URL}/api/libur?date=2026-08-17'); const data = await r.json(); console.log(data)">Salin</button>
       </div>
     </div>
     <div class="int-card">
@@ -512,8 +611,8 @@ const data = await r.json();
         <li>Share ke seluruh tim</li>
       </ul>
       <div class="snippet">
-<pre>https://data-libur-nasional-indonesia.vercel.app/api/libur.ics?year=2026</pre>
-        <button type="button" data-copy="https://data-libur-nasional-indonesia.vercel.app/api/libur.ics?year=2026">Salin</button>
+<pre>${f.SITE_URL}/api/libur.ics?year=${f.YEAR}</pre>
+        <button type="button" data-copy="${f.SITE_URL}/api/libur.ics?year=${f.YEAR}">Salin</button>
       </div>
     </div>
   </div>
@@ -526,8 +625,8 @@ const data = await r.json();
     <div>
       <h3>Sumber data</h3>
       <ul class="sources">
-<li>Hari Libur Nasional dan Cuti Bersama Tahun 2026 — <a href="https://www.kemenkopmk.go.id/sites/default/files/pengumuman/2025-09/SKB%20Libur%20Nasional%20dan%20Cuti%20Bersama%20Tahun%202026.pdf" rel="noopener">sumber resmi</a></li>
-        <li>Data bisa berubah sesuai penetapan resmi (revisi SKB). Lihat <a href="https://data-libur-nasional-indonesia.vercel.app/data/imsak/jakarta-2026.json">contoh imsakiyah raw JSON</a>.</li>
+${f.SOURCES}
+        <li>Data bisa berubah sesuai penetapan resmi (revisi SKB). Lihat <a href="${f.SITE_URL}/data/imsak/jakarta-${f.YEAR}.json">contoh imsakiyah raw JSON</a>.</li>
       </ul>
     </div>
     <div>
@@ -548,7 +647,7 @@ const data = await r.json();
   "use strict";
   document.documentElement.classList.add("js");
   var D = window.__DATA__ || { entries: [], imsak: [], year: "" };
-  var BASE = "https://data-libur-nasional-indonesia.vercel.app";
+  var BASE = "${f.SITE_URL}";
   var $ = function (s) { return document.querySelector(s); };
   var todayWIB = function () {
     return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
@@ -652,10 +751,10 @@ const data = await r.json();
     fetch(BASE + "/api/imsak?city=" + city + "&year=" + year).then(function (r) { return r.json().then(function (b) { return { r: r, b: b }; }); })
       .then(function (x) {
         var b = x.b;
-        var head = b.city + " · " + b.province + " · " + b.timezone + " (" + b.hijri + ") — " + b.schedule.length + " hari\n";
+        var head = b.city + " · " + b.province + " · " + b.timezone + " (" + b.hijri + ") — " + b.schedule.length + " hari\\n";
         var body = head + b.schedule.map(function (s) {
           return s.day + " " + s.date + "  imsak " + s.imsak + "  subuh " + s.subuh + "  zuhur " + s.zuhur + "  ashar " + s.ashar + "  magrib " + s.magrib + "  isya " + s.isya;
-        }).join("\n");
+        }).join("\\n");
         $("#imsakPre").textContent = body;
         lastOut = body;
       })
@@ -723,7 +822,7 @@ const data = await r.json();
       });
       for (var i = 0; i < D.imsak.length; i++) {
         var c = D.imsak[i];
-        if (c.city.toLowerCase().replace(/\s+/g, "") === slug) {
+        if (c.city.toLowerCase().replace(/\\s+/g, "") === slug) {
           $("#imTitle").textContent = c.city;
           $("#imSub").textContent = c.province + " · " + c.timezone + " · " + c.hijri + " · " + c.year;
         }
@@ -737,3 +836,5 @@ const data = await r.json();
 </script>
 </body>
 </html>
+`;
+}

@@ -61,6 +61,54 @@ def libur(year: int | None = None) -> list[dict]:
     return list(_year_entries(LIBUR_FILE, year))
 
 
+def cuti(year: int | None = None) -> list[dict]:
+    """Daftar cuti bersama nasional dalam satu tahun."""
+    year = year or _dt.date.today().year
+    return list(_year_entries(CUTI_FILE, year))
+
+
+def month(year: int, month_number: int) -> list[dict]:
+    """Daftar tanggal libur (nasional + cuti bersama) dalam satu bulan sebuah tahun.
+
+    ``month_number`` 1-12 (Januari-Desember).
+
+    >>> month(2026, 3)[:1]  # doctest: +SKIP
+    [{'date': '2026-03-18', 'name': 'Cuti Bersama Hari Suci Nyepi'}]
+    """
+    if not 1 <= month_number <= 12:
+        raise ValueError("month_number harus 1-12")
+    return [
+        {"date": date.isoformat(), "name": name}
+        for date, name in sorted(_all_dates(year).items())
+        if date.year == year and date.month == month_number
+    ]
+
+
+def between(start: str | _dt.date | _dt.datetime, end: str | _dt.date | _dt.datetime) -> list[dict]:
+    """Daftar tanggal libur (nasional + cuti bersama) dalam rentang tanggal inklusif.
+
+    >>> len(between("2026-08-01", "2026-08-31"))  # doctest: +SKIP
+    1
+    """
+    start_date = _parse_date(start)
+    end_date = _parse_date(end)
+    if end_date < start_date:
+        start_date, end_date = end_date, start_date
+    result: list[dict] = []
+    for year in range(start_date.year, end_date.year + 1):
+        for date, name in sorted(_all_dates(year).items()):
+            if start_date <= date <= end_date:
+                result.append({"date": date.isoformat(), "name": name})
+    return result
+
+
+def holiday_range(
+    start: str | _dt.date | _dt.datetime, end: str | _dt.date | _dt.datetime
+) -> list[dict]:
+    """Alias bahasa Inggris dari :func:`between`."""
+    return between(start, end)
+
+
 def is_libur(value: str | _dt.date | _dt.datetime, include_cuti: bool = True) -> bool:
     """True bila ``value`` adalah hari libur nasional (dan opsional cuti bersama)."""
     tanggal = _parse_date(value)
@@ -78,18 +126,27 @@ def check(value: str | _dt.date | _dt.datetime) -> str | None:
     return _all_dates(tanggal.year).get(tanggal)
 
 
-def upcoming(value: str | _dt.date | _dt.datetime | None = None) -> dict:
-    """Hari libur berikutnya (>= tanggal yang diberikan)."""
+def upcoming(value: str | _dt.date | _dt.datetime | None = None, n: int = 1) -> dict | list[dict]:
+    """Satu atau beberapa hari libur berikutnya (>= tanggal yang diberikan).
+
+    ``n=1`` mengembalikan dict; ``n>1`` mengembalikan list dict ber-urutan tanggal.
+    """
+    if n < 1:
+        raise ValueError("n harus >= 1")
     start = _parse_date(value) if value else _dt.date.today()
-    all_entries = sorted(_all_dates(start.year).items())
-    for date, name in all_entries:
-        if date >= start:
-            return {"date": date.isoformat(), "name": name}
-    for next_year in range(start.year + 1, start.year + 5):
-        entries = sorted(_all_dates(next_year).items())
-        if entries:
-            return {"date": entries[0][0].isoformat(), "name": entries[0][1]}
-    return {"date": None, "name": None}
+    found: list[dict] = []
+    for year in range(start.year, start.year + 5):
+        if len(found) >= n:
+            break
+        for date, name in sorted(_all_dates(year).items()):
+            if date < start:
+                continue
+            found.append({"date": date.isoformat(), "name": name})
+            if len(found) >= n:
+                break
+    if n == 1:
+        return found[0] if found else {"date": None, "name": None}
+    return found
 
 
 def imsak(city: str, year: int | None = None) -> dict:

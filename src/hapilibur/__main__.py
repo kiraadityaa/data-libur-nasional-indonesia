@@ -42,8 +42,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tahun = sub.add_parser("tahun", help="daftar hari libur nasional satu tahun")
     p_tahun.add_argument("tahun", nargs="?", type=int, help="tahun (default: tahun berjalan)")
 
+    p_cuti = sub.add_parser("cuti", help="daftar cuti bersama satu tahun")
+    p_cuti.add_argument("tahun", nargs="?", type=int, help="tahun (default: tahun berjalan)")
+
+    p_bulan = sub.add_parser("bulan", help="daftar tanggal libur satu bulan")
+    p_bulan.add_argument("tahun", type=int, help="tahun, misal 2026")
+    p_bulan.add_argument("bulan", type=int, help="bulan 1-12, misal 3")
+
+    p_selang = sub.add_parser("selang", help="daftar tanggal libur dalam rentang tanggal")
+    p_selang.add_argument("dari", help="tanggal awal YYYY-MM-DD")
+    p_selang.add_argument("sampai", help="tanggal akhir YYYY-MM-DD")
+
     p_next = sub.add_parser("upcoming", help="hari libur berikutnya")
     p_next.add_argument("tanggal", nargs="?", help="awal pencarian (default: hari ini)")
+    p_next.add_argument("-n", "--count", type=int, default=1, help="jumlah hari libur (default: 1)")
 
     p_imsak = sub.add_parser("imsak", help="jadwal imsakiyah sebuah kota")
     p_imsak.add_argument("kota", help="nama kota, misal jakarta atau surabaya")
@@ -61,9 +73,19 @@ def main(argv: list[str] | None = None) -> int:
         _fmt_date(args.tanggal)
     elif args.command == "tahun":
         _print_holidays(core.libur(args.tahun), args.tahun or 0)
+    elif args.command == "cuti":
+        _print_holidays(core.cuti(args.tahun), args.tahun or 0)
+    elif args.command == "bulan":
+        _print_holidays(core.month(args.tahun, args.bulan), args.tahun)
+    elif args.command == "selang":
+        _print_holidays(core.between(args.dari, args.sampai), 0)
     elif args.command == "upcoming":
-        result = core.upcoming(args.tanggal)
-        print(f"{result['date']}  {result['name']}")
+        result = core.upcoming(args.tanggal, n=args.count)
+        if args.count == 1:
+            print(f"{result['date']}  {result['name']}")
+        else:
+            for item in result:
+                print(f"{item['date']}  {item['name']}")
     elif args.command == "imsak":
         _print_imsak(core.imsak(args.kota, args.tahun))
     elif args.command == "kota":
