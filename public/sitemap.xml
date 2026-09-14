@@ -7,4 +7,6 @@
   <url><loc>https://data-libur-nasional-indonesia.vercel.app/api/libur.ics</loc><lastmod>2026-09-12</lastmod></url>
   <url><loc>https://data-libur-nasional-indonesia.vercel.app/api/health</loc><lastmod>2026-09-12</lastmod></url>
   <url><loc>https://data-libur-nasional-indonesia.vercel.app/openapi.json</loc><lastmod>2026-09-12</lastmod></url>
+  <url><loc>https://data-libur-nasional-indonesia.vercel.app/styles.css</loc><lastmod>2026-09-12</lastmod></url>
+  <url><loc>https://data-libur-nasional-indonesia.vercel.app/app.js</loc><lastmod>2026-09-12</lastmod></url>
 </urlset>

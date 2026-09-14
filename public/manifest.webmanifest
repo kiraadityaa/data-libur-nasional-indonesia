@@ -1,10 +1,10 @@
 {
-  "name": "Libur Nasional Indonesia — API hari libur, cuti bersama & imsakiyah",
+  "name": "libur.id — API hari libur, cuti bersama & imsakiyah Indonesia",
   "short_name": "libur.id",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0b0d10",
-  "theme_color": "#ff5a3c",
+  "background_color": "#fafaf9",
+  "theme_color": "#be123c",
   "description": "Hari libur, cuti bersama, dan jadwal imsakiyah Indonesia — JSON murni, gratis.",
   "icons": []
 }

@@ -1,44 +1,34 @@
 #!/usr/bin/env node
 /**
- * Generator halaman statis public/* dari data JSON kanonik (data/).
+ * Orkestrasi build halaman statis: baca data/ → render via scripts/site/template.mjs
+ * → tulis public/index.html + salin aset (styles.css, app.js) + openapi.json +
+ * manifest + sitemap.xml.
  *
  * Jalankan: npm run build:site
- * - Membaca data/libur-nasional.json, data/cuti-bersama.json, data/imsak/*.json
- * - Menyuntik snapshot (tabel, statistik, next-holiday) ke dalam template HTML
- * - Keluaran: public/index.html, public/openapi.json, public/manifest.webmanifest,
- *   public/sitemap.xml
- *
- * Halaman yang dihasilkan tetap berfungsi statis; bagian interaktif memanggil
- * /api/* saat disajikan melalui Vercel.
- *
- * Design read (design-taste-frontend): developer docs + dataset landing untuk
- * developer Indonesia — trust-first, restrained. Redesign-preserve: tema
- * dark/light + sistem visual dipertahankan, yang ditingkatkan adalah fungsi
- * (search, filter jenis, deep-link, playground lengkap, OpenAPI, PWA).
- * Dials: VARIANCE 5 / MOTION 3 / DENSITY 5.
  */
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, copyFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  esc,
+  calendarStrip,
+  endpointList,
+  holidayGroups,
+  monthPills,
+  imsakTables,
+  imsakCards,
+  longDateId,
+} from "./site/template.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA = join(ROOT, "data");
 const PUB = join(ROOT, "public");
+const SITE = join(ROOT, "scripts", "site");
 const SITE_URL = (process.env.SITE_URL ?? "https://data-libur-nasional-indonesia.vercel.app").replace(/\/$/, "");
 const VERSION = "0.2.0";
 
 function readJson(rel) {
   return JSON.parse(readFileSync(join(DATA, rel), "utf-8"));
-}
-
-/** Escape HTML untuk semua string dari data (anti-XSS). */
-function esc(s) {
-  return String(s ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 const libur = readJson("libur-nasional.json");
@@ -50,9 +40,7 @@ const liburYear = libur.years[YEAR]?.holidays ?? [];
 const cutiYear = cuti.years[YEAR]?.holidays ?? [];
 
 const merged = new Map();
-for (const e of liburYear) {
-  merged.set(e.date, { date: e.date, name: e.name, jenis: ["libur_nasional"] });
-}
+for (const e of liburYear) merged.set(e.date, { date: e.date, name: e.name, jenis: ["libur_nasional"] });
 for (const e of cutiYear) {
   const hit = merged.get(e.date);
   if (hit) {
@@ -69,74 +57,282 @@ const imsakCities = readdirSync(join(DATA, "imsak"))
   .map((f) => ({ slug: f.replace(/\.json$/, "").replace(/-\d{4}$/, ""), payload: readJson(`imsak/${f}`) }))
   .sort((a, b) => a.payload.city.localeCompare(b.payload.city));
 
-const MONTHS_ID = [
-  "Januari", "Februari", "Maret", "April", "Mei", "Juni",
-  "Juli", "Agustus", "September", "Oktober", "November", "Desember",
-];
-const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+if (!imsakCities.length) throw new Error("Tidak ada data imsakiyah untuk disuntikkan.");
 
-function activeMonths() {
-  const seen = new Set();
-  for (const e of allEntries) seen.add(Number(e.date.slice(5, 7)));
-  return [...seen].sort((a, b) => a - b);
-}
+const snapshot = {
+  year: YEAR,
+  years: YEARS.concat([YEAR]).sort(),
+  version: VERSION,
+  updated_at: libur.updated_at,
+  entries: allEntries,
+  imsak: imsakCities.map((c) => ({
+    slug: c.slug,
+    city: c.payload.city,
+    province: c.payload.province,
+    timezone: c.payload.timezone,
+    hijri: c.payload.hijri,
+    year: c.payload.year,
+  })),
+};
 
-function monthEntries(m) {
-  const prefix = `${YEAR}-${String(m + 1).padStart(2, "0")}-`;
-  return allEntries.filter((e) => e.date.startsWith(prefix));
-}
+const updatedDay = String(libur.updated_at).slice(0, 10);
+const c1 = imsakCities[0].payload;
+const sources = [...libur.sources, ...cuti.sources];
+const seenSrc = new Map();
+for (const s of sources) if (!seenSrc.has(s.name)) seenSrc.set(s.name, s);
 
-function dayName(iso) {
-  const d = new Date(iso + "T00:00:00Z");
-  return new Intl.DateTimeFormat("id-ID", { weekday: "long", timeZone: "UTC" }).format(d);
-}
+const html = `<!doctype html>
+<html lang="id" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>libur.id — API Hari Libur Nasional, Cuti Bersama & Imsakiyah Indonesia</title>
+<meta name="description" content="REST API gratis hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia. Data resmi SKB 3 Menteri dan Bimas Islam Kemenag. JSON murni, tanpa kunci API." />
+<meta name="robots" content="index, follow" />
+<link rel="canonical" href="${SITE_URL}/" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#fafaf9" />
+<meta property="og:title" content="libur.id — API hari libur, cuti bersama & imsakiyah Indonesia" />
+<meta property="og:description" content="Data resmi ${YEAR} dalam satu API. JSON murni, gratis, tanpa kunci." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="${SITE_URL}/" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23be123c'/%3E%3Crect x='5' y='7' width='14' height='3' rx='1' fill='white'/%3E%3Crect x='5' y='14' width='14' height='3' rx='1' fill='white'/%3E%3C/svg%3E" />
+<link rel="preload" href="/fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="stylesheet" href="/styles.css" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Dataset","name":"Data libur nasional, cuti bersama, dan imsakiyah Indonesia","description":"Hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia","url":"${SITE_URL}/","version":"${VERSION}","license":"https://opensource.org/licenses/MIT","includedInDataCatalog":{"@type":"DataCatalog","name":"SKB 3 Menteri & Bimas Islam Kemenag"}}
+</script>
+<script>
+window.__DATA__ = ${JSON.stringify(snapshot).replace(/</g, "\\u003c")};
+</script>
+<script src="/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Langsung ke konten</a>
+<div class="wrap">
 
-function rowsLibur() {
-  const out = [];
-  for (let m = 0; m < 12; m++) {
-    const entries = monthEntries(m);
-    if (entries.length === 0) continue;
-    const rows = entries
-      .map((e) =>
-        `<li data-jenis="${e.jenis.join(" ")}" data-search="${esc((e.date + " " + e.name + " " + dayName(e.date)).toLowerCase())}"><span class="mo-day">${esc(dayName(e.date))}</span><span class="mo-date mono">${esc(e.date)}</span>` +
-        `<span class="mo-name">${esc(e.name)}</span>` +
-        `<span class="tags">${e.jenis
-          .map((j) => `<span class="tag ${j === "libur_nasional" ? "tag-l" : "tag-c"}">${j === "libur_nasional" ? "Libur nasional" : "Cuti bersama"}</span>`)
-          .join("")}</span></li>`
-      )
-      .join("");
-    out.push(
-      `<section class="mo" data-month="${m + 1}">` +
-        `<div class="mo-head"><h3>${MONTHS_ID[m]} ${YEAR}</h3><span class="mo-count">${entries.length} tanggal</span></div>` +
-        `<ul class="mo-list">${rows}</ul></section>`
-    );
-  }
-  return out.join("\n");
-}
+<header class="top">
+  <a class="brand" href="/" aria-label="Beranda libur.id">libur<b>.id</b></a>
+  <nav class="nav" aria-label="Navigasi utama">
+    <a href="#api">API</a>
+    <a href="#data">Data ${YEAR}</a>
+    <a href="#imsak">Imsakiyah</a>
+    <span class="ver">v${VERSION}</span>
+    <button class="theme-btn" id="themeBtn" type="button" aria-label="Ganti tema">Sun</button>
+  </nav>
+</header>
 
-function rowsImsak(city) {
-  return city.payload.schedule
-    .map(
-      (s) =>
-        `<tr><td class="mono">${s.day}</td><td class="mono">${esc(s.date)}</td>` +
-        `<td class="mono">${esc(s.imsak)}</td><td class="mono">${esc(s.subuh)}</td><td class="mono">${esc(s.zuhur)}</td>` +
-        `<td class="mono">${esc(s.ashar)}</td><td class="mono">${esc(s.magrib)}</td><td class="mono">${esc(s.isya)}</td></tr>`
-    )
-    .join("\n");
-}
+<main id="main">
 
-function sourcesList() {
-  const seen = new Map();
-  for (const s of [...libur.sources, ...cuti.sources]) {
-    if (!seen.has(s.name)) seen.set(s.name, s);
-  }
-  return [...seen.values()]
-    .map(
-      (s) =>
-        `<li>${esc(s.title ?? s.name)} — <a href="${esc(s.url)}" rel="noopener">sumber resmi</a></li>`
-    )
-    .join("");
-}
+<div class="hero">
+  <div>
+    <p class="status"><i></i>Data resmi · SKB 3 Menteri &amp; Kemenag · diperbarui ${esc(updatedDay)}</p>
+    <h1>Hari libur Indonesia, satu API.</h1>
+    <p class="sub">Libur nasional, cuti bersama, dan imsakiyah dalam JSON murni. Gratis, tanpa kunci, untuk bahasa apa pun.</p>
+    <div class="cta">
+      <a class="btn btn-p" href="#play">Coba langsung</a>
+      <a class="btn btn-g" href="/openapi.json">Spesifikasi</a>
+    </div>
+  </div>
+  ${calendarStrip(allEntries, YEAR)}
+</div>
+
+<div class="stats" aria-label="Ringkasan data">
+  <div class="stat"><b>${liburYear.length}</b><span>libur nasional ${YEAR}</span></div>
+  <div class="stat"><b>${cutiYear.length}</b><span>cuti bersama</span></div>
+  <div class="stat"><b>${imsakCities.length}</b><span>kota imsakiyah</span></div>
+  <div class="stat"><b>${allEntries.length}</b><span>total tanggal</span></div>
+</div>
+
+<section class="block" id="api">
+  <h2>Endpoint</h2>
+  <p class="sec-sub">Lima endpoint, semua GET dengan cache publik. Klik contoh untuk mengisinya ke playground.</p>
+  ${endpointList(YEAR)}
+</section>
+
+<section class="block" id="play">
+  <h2>Playground</h2>
+  <p class="sec-sub">Memanggil API sungguhan dari browser. Tautan hasil bisa dibagikan.</p>
+  <div class="term">
+    <div class="term-bar">
+      <div class="tabs" role="tablist" aria-label="Mode playground">
+        <button class="tab" role="tab" aria-selected="true" data-tab="libur-pane" type="button">Libur</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="range-pane" type="button">Rentang</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="imsak-pane" type="button">Imsakiyah</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="ics-pane" type="button">Kalender</button>
+      </div>
+      <span class="req-status" id="reqStatus" aria-live="polite"></span>
+    </div>
+    <div class="term-body">
+      <div data-pane="libur-pane">
+        <div class="ctl">
+          <div class="field"><span>Tanggal</span><input id="dateInput" type="date" value="${YEAR}-08-17" /></div>
+          <div class="field"><span>Mode</span><select id="liburMode">
+            <option value="date">Satu tanggal</option>
+            <option value="year">Setahun</option>
+            <option value="month">Satu bulan</option>
+            <option value="next">Berikutnya</option>
+          </select></div>
+          <div class="field" id="monthWrap" hidden><span>Bulan</span><select id="monthInput">
+            ${["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"].map((m, i) => `<option value="${i + 1}">${m}</option>`).join("")}
+          </select></div>
+          <div class="field" id="countWrap" hidden><span>Jumlah 1–30</span><input id="countInput" type="number" min="1" max="30" value="3" /></div>
+          <div class="field"><span>Jenis</span><select id="liburType">
+            <option value="all">Semua</option><option value="libur">Nasional</option><option value="cuti">Cuti</option>
+          </select></div>
+          <button class="btn btn-p" id="liburGo" type="button">Kirim</button>
+        </div>
+        <div class="out"><pre id="liburPre">Tekan Kirim untuk memanggil API.</pre></div>
+        <div class="term-actions">
+          <button class="mini-btn" id="copyOut" type="button">Salin respons</button>
+          <button class="mini-btn" id="copyCurl" type="button">Salin cURL</button>
+        </div>
+      </div>
+      <div data-pane="range-pane" hidden>
+        <div class="ctl">
+          <div class="field"><span>Dari</span><input id="fromInput" type="date" value="${YEAR}-03-20" /></div>
+          <div class="field"><span>Sampai</span><input id="toInput" type="date" value="${YEAR}-03-24" /></div>
+          <button class="btn btn-p" id="rangeGo" type="button">Kirim</button>
+        </div>
+        <div class="out"><pre id="rangePre">Isi rentang lalu tekan Kirim.</pre></div>
+      </div>
+      <div data-pane="imsak-pane" hidden>
+        <div class="ctl">
+          <div class="field"><span>Kota</span><select id="imsakCity">
+            ${imsakCities.map((c) => `<option value="${esc(c.slug)}">${esc(c.payload.city)}</option>`).join("")}
+          </select></div>
+          <div class="field"><span>Tahun</span><select id="imsakYear">
+            ${YEARS.concat([YEAR]).sort().map((y) => `<option${y === YEAR ? " selected" : ""}>${y}</option>`).join("")}
+          </select></div>
+          <button class="btn btn-p" id="imsakGo" type="button">Kirim</button>
+        </div>
+        <div class="out"><pre id="imsakPre">Pilih kota lalu tekan Kirim.</pre></div>
+      </div>
+      <div data-pane="ics-pane" hidden>
+        <div class="ctl">
+          <div class="field"><span>Isi</span><select id="icsType">
+            <option value="all">Libur + cuti</option><option value="libur">Nasional saja</option><option value="cuti">Cuti saja</option>
+          </select></div>
+          <div class="field"><span>Tahun</span><select id="icsYear">
+            ${YEARS.concat([YEAR]).sort().map((y) => `<option${y === YEAR ? " selected" : ""}>${y}</option>`).join("")}
+          </select></div>
+          <button class="btn btn-p" id="icsGo" type="button">Unduh .ics</button>
+        </div>
+        <div class="out"><pre>File dibuka di Google Calendar (Settings → Import) atau Apple Calendar. URL langganan: <span id="icsUrl"></span></pre></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="data">
+  <h2>Data ${YEAR}</h2>
+  <p class="sec-sub" id="dataMeta">${allEntries.length} tanggal ditampilkan</p>
+  <div class="data-tools">
+    <input id="searchInput" type="search" placeholder="Cari nama atau tanggal…" aria-label="Cari libur" />
+    <select id="jenisFilter" aria-label="Filter jenis">
+      <option value="all">Semua jenis</option>
+      <option value="libur_nasional">Nasional saja</option>
+      <option value="cuti_bersama">Cuti saja</option>
+    </select>
+  </div>
+  <div class="month-pills" id="monthFilter" role="group" aria-label="Filter bulan">
+    ${monthPills(allEntries, YEAR)}
+  </div>
+  <div id="liburList">
+${holidayGroups(allEntries, YEAR)}
+  </div>
+  <div class="empty" id="emptyState" hidden>Tidak ada yang cocok. <button class="mini-btn" id="resetFilter" type="button">Atur ulang</button></div>
+</section>
+
+<section class="block" id="imsak">
+  <h2>Imsakiyah ${YEAR}</h2>
+  <p class="sec-sub">30 hari Ramadan dari Bimas Islam Kemenag, zona waktu lokal tiap kota.</p>
+  <div class="imtabs" role="group" aria-label="Pilih kota">
+    ${imsakCities.map((c, i) => `<button class="imtab" data-city="${esc(c.slug)}" aria-pressed="${i === 0}" type="button">${esc(c.payload.city)}</button>`).join("\n    ")}
+  </div>
+  <p class="immeta" id="imMeta">${esc(c1.city)} · ${esc(c1.province)} · ${esc(c1.timezone)} · ${esc(c1.hijri)}</p>
+  <div class="imtable-wrap">${imsakTables(imsakCities)}</div>
+  <div class="imcards">${imsakCards(imsakCities)}</div>
+</section>
+
+<section class="block" id="pakai">
+  <h2>Pakai di proyekmu</h2>
+  <p class="sec-sub">Tiga bahasa, satu pola: fetch, parse, selesai.</p>
+  <div>
+    <div class="usetabs" role="tablist" aria-label="Contoh kode">
+      <button class="usetab" role="tab" aria-selected="true" data-tab="use-curl" type="button">cURL</button>
+      <button class="usetab" role="tab" aria-selected="false" data-tab="use-py" type="button">Python</button>
+      <button class="usetab" role="tab" aria-selected="false" data-tab="use-js" type="button">JavaScript</button>
+    </div>
+    <div class="codebox" data-pane="use-curl"><pre>curl "${SITE_URL}/api/libur?date=${YEAR}-08-17" | python3 -m json.tool</pre><button type="button" data-copy="curl ${SITE_URL}/api/libur?date=${YEAR}-08-17">Salin</button></div>
+    <div class="codebox" data-pane="use-py" hidden><pre>from hapilibur import is_libur, upcoming
+is_libur("${YEAR}-08-17")  # True
+upcoming()  # libur terdekat</pre><button type="button" data-copy="from hapilibur import is_libur, upcoming">Salin</button></div>
+    <div class="codebox" data-pane="use-js" hidden><pre>const r = await fetch("/api/libur?date=${YEAR}-08-17");
+const data = await r.json(); // { is_holiday: true, … }</pre><button type="button" data-copy="const r = await fetch('${SITE_URL}/api/libur?date=${YEAR}-08-17'); const data = await r.json();">Salin</button></div>
+  </div>
+  <div class="icsline">
+    <div><code>${SITE_URL}/api/libur.ics?year=${YEAR}</code><p>Tempel ke Google / Apple Calendar untuk berlangganan.</p></div>
+    <button class="mini-btn" type="button" data-copy="${SITE_URL}/api/libur.ics?year=${YEAR}">Salin</button>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="foot">
+    <b>libur.id</b>
+    <span>Sumber: ${[...seenSrc.values()].map((s) => `<a href="${esc(s.url)}" rel="noopener">${esc(s.title ?? s.name)}</a>`).join(" · ")}</span>
+    <a href="/openapi.json">OpenAPI</a>
+    <a href="/api/health">Health</a>
+    <a href="https://github.com/kiraadityaa/data-libur-nasional-indonesia" rel="noopener">GitHub</a>
+  </div>
+  <p class="license">MIT · Data publik instansi pemerintah, atribusi dicantumkan. Halaman statis, data dibundel sebagai JSON.</p>
+</footer>
+
+</div>
+</body>
+</html>
+`;
+
+writeFileSync(join(PUB, "index.html"), html, "utf-8");
+console.log(`build-site: ${YEAR} · ${liburYear.length} libur · ${cutiYear.length} cuti · ${imsakCities.length} kota`);
+console.log(`wrote public/index.html (${(html.length / 1024).toFixed(1)} KiB)`);
+
+copyFileSync(join(SITE, "styles.css"), join(PUB, "styles.css"));
+copyFileSync(join(SITE, "app.js"), join(PUB, "app.js"));
+console.log("copied public/styles.css + public/app.js");
+
+const openapi = JSON.stringify(buildOpenApi(), null, 2) + "\n";
+writeFileSync(join(PUB, "openapi.json"), openapi, "utf-8");
+console.log(`wrote public/openapi.json (${(openapi.length / 1024).toFixed(1)} KiB)`);
+
+const manifest = JSON.stringify(
+  {
+    name: "libur.id — API hari libur, cuti bersama & imsakiyah Indonesia",
+    short_name: "libur.id",
+    start_url: "/",
+    display: "standalone",
+    background_color: "#fafaf9",
+    theme_color: "#be123c",
+    description: "Hari libur, cuti bersama, dan jadwal imsakiyah Indonesia — JSON murni, gratis.",
+    icons: [],
+  },
+  null,
+  2
+) + "\n";
+writeFileSync(join(PUB, "manifest.webmanifest"), manifest, "utf-8");
+console.log("wrote public/manifest.webmanifest");
+
+const sitemap = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+  `  <url><loc>${SITE_URL}/</loc><lastmod>${updatedDay}</lastmod></url>\n` +
+  [`api/libur`, `api/imsak`, `api/kota`, `api/libur.ics`, `api/health`, `openapi.json`, `styles.css`, `app.js`]
+    .map((p) => `  <url><loc>${SITE_URL}/${p}</loc><lastmod>${updatedDay}</lastmod></url>`)
+    .join("\n") +
+  `\n</urlset>\n`;
+writeFileSync(join(PUB, "sitemap.xml"), sitemap, "utf-8");
+console.log("wrote public/sitemap.xml");
 
 function buildOpenApi() {
   return {
@@ -196,944 +392,4 @@ function buildOpenApi() {
       "/api/health": { get: { summary: "Health check", responses: { 200: { description: "OK" } } } },
     },
   };
-}
-
-const snapshot = {
-  year: YEAR,
-  years: YEARS.concat([YEAR]).sort(),
-  version: VERSION,
-  updated_at: libur.updated_at,
-  entries: allEntries,
-  imsak: imsakCities.map((c) => ({
-    slug: c.slug,
-    city: c.payload.city,
-    province: c.payload.province,
-    timezone: c.payload.timezone,
-    hijri: c.payload.hijri,
-    year: c.payload.year,
-  })),
-};
-
-const flags = {
-  COUNT_LIBUR: liburYear.length,
-  COUNT_CUTI: cutiYear.length,
-  COUNT_KOTA: imsakCities.length,
-  COUNT_TOTAL: allEntries.length,
-  YEAR,
-  YEARS: YEARS.concat([YEAR]).sort(),
-  ROWS_LIBUR: rowsLibur(),
-  CITY_IMSAK_1: imsakCities[0] ?? null,
-  SNAPSHOT_JSON: JSON.stringify(snapshot).replace(/</g, "\\u003c"),
-  SITE_URL,
-  VERSION,
-  SOURCES: sourcesList(),
-  TOOLBAR: [
-    '<button data-month="0" aria-pressed="true">Semua</button>',
-    ...activeMonths().map((m) => `<button data-month="${m}" aria-pressed="false">${MONTHS_SHORT[m - 1]}</button>`),
-  ].join("\n    "),
-  IMSAK_TABS: imsakCities
-    .map((c, i) => `<button class="imtab" data-city="${esc(c.slug)}" aria-pressed="${i === 0 ? "true" : "false"}">${esc(c.payload.city)}</button>`)
-    .join("\n    "),
-  IMSAK_TABLES: imsakCities
-    .map(
-      (c, i) =>
-        `<table class="imtable" data-city-t="${esc(c.slug)}"${i === 0 ? "" : " hidden"}>` +
-        `<thead><tr><th>Hari</th><th>Tanggal</th><th>Imsak</th><th>Subuh</th><th>Zuhur</th><th>Ashar</th><th>Magrib</th><th>Isya</th></tr></thead>` +
-        `<tbody>${rowsImsak(c)}</tbody></table>`
-    )
-    .join("\n"),
-  YEAR_OPTIONS: YEARS.concat([YEAR]).sort().map((y) => `<option${y === YEAR ? " selected" : ""}>${y}</option>`).join(""),
-  IMSAK_CITY_OPTIONS: imsakCities.map((c) => `<option value="${esc(c.slug)}">${esc(c.payload.city)} — ${esc(c.payload.province)}</option>`).join(""),
-};
-
-console.log(`build-site: ${YEAR} · ${liburYear.length} libur · ${cutiYear.length} cuti · ${imsakCities.length} kota`);
-if (!flags.CITY_IMSAK_1) {
-  throw new Error("Tidak ada data imsakiyah untuk disuntikkan.");
-}
-
-const html = render(flags);
-writeFileSync(join(PUB, "index.html"), html, "utf-8");
-console.log(`wrote public/index.html (${(html.length / 1024).toFixed(1)} KiB)`);
-
-const openapi = JSON.stringify(buildOpenApi(), null, 2) + "\n";
-writeFileSync(join(PUB, "openapi.json"), openapi, "utf-8");
-console.log(`wrote public/openapi.json (${(openapi.length / 1024).toFixed(1)} KiB)`);
-
-const manifest = JSON.stringify(
-  {
-    name: "Libur Nasional Indonesia — API hari libur, cuti bersama & imsakiyah",
-    short_name: "libur.id",
-    start_url: "/",
-    display: "standalone",
-    background_color: "#0b0d10",
-    theme_color: "#ff5a3c",
-    description: "Hari libur, cuti bersama, dan jadwal imsakiyah Indonesia — JSON murni, gratis.",
-    icons: [],
-  },
-  null,
-  2
-) + "\n";
-writeFileSync(join(PUB, "manifest.webmanifest"), manifest, "utf-8");
-console.log(`wrote public/manifest.webmanifest`);
-
-const sitemap = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-  `  <url><loc>${SITE_URL}/</loc><lastmod>${String(libur.updated_at).slice(0, 10)}</lastmod></url>\n` +
-  [`api/libur`, `api/imsak`, `api/kota`, `api/libur.ics`, `api/health`, `openapi.json`]
-    .map((p) => `  <url><loc>${SITE_URL}/${p}</loc><lastmod>${String(libur.updated_at).slice(0, 10)}</lastmod></url>`)
-    .join("\n") +
-  `\n</urlset>\n`;
-writeFileSync(join(PUB, "sitemap.xml"), sitemap, "utf-8");
-console.log(`wrote public/sitemap.xml`);
-
-function render(f) {
-  const c1 = f.CITY_IMSAK_1.payload;
-  return `<!doctype html>
-<html lang="id" data-theme="dark">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Libur Nasional Indonesia — API Hari Libur, Cuti Bersama & Imsakiyah</title>
-<meta name="description" content="REST API gratis hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia. Data resmi SKB 3 Menteri dan Bimas Islam Kemenag, format JSON murni, tanpa kunci API." />
-<meta name="robots" content="index, follow" />
-<link rel="canonical" href="${f.SITE_URL}/" />
-<link rel="manifest" href="/manifest.webmanifest" />
-<meta name="theme-color" content="#0b0d10" />
-<meta property="og:title" content="Libur Nasional Indonesia — API hari libur, cuti bersama & imsakiyah" />
-<meta property="og:description" content="Data resmi ${f.YEAR} dalam satu API. JSON murni, gratis, tanpa kunci." />
-<meta property="og:type" content="website" />
-<meta property="og:url" content="${f.SITE_URL}/" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23f7f7f5'/%3E%3Crect x='4' y='6' width='16' height='4' rx='1' fill='%23e1451f'/%3E%3Crect x='4' y='14' width='16' height='4' rx='1' fill='%23e1451f'/%3E%3C/svg%3E" />
-<script type="application/ld+json">
-{"@context":"https://schema.org","@type":"Dataset","name":"Data libur nasional, cuti bersama, dan imsakiyah Indonesia","description":"Hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia","url":"${f.SITE_URL}/","version":"${f.VERSION}","license":"https://opensource.org/licenses/MIT","includedInDataCatalog":{"@type":"DataCatalog","name":"SKB 3 Menteri & Bimas Islam Kemenag"}}
-</script>
-<script>
-window.__DATA__ = ${f.SNAPSHOT_JSON};
-</script>
-<style>
-:root{
-  --bg:#0b0d10; --bg2:#101319; --surface:#141821; --surface2:#1a1f2a;
-  --line:rgba(255,255,255,.09); --ink:#eef1f6; --muted:#9aa3b2;
-  --accent:#ff5a3c; --accent-soft:rgba(255,90,60,.14); --on-accent:#1a0905;
-  --ok:#3ddc84; --mono:'SFMono-Regular',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --sans:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
-}
-[data-theme="light"]{
-  --bg:#f7f7f5; --bg2:#eef0f1; --surface:#ffffff; --surface2:#f2f3f4;
-  --line:rgba(18,22,30,.13); --ink:#171a20; --muted:#5a6270;
-  --accent:#d63a1e; --accent-soft:rgba(214,58,30,.1); --on-accent:#fff5f0;
-}
-@media (prefers-color-scheme: light){ html:not([data-theme="dark"]):not([data-theme="light"]){ --bg:#f7f7f5; --bg2:#eef0f1; --surface:#ffffff; --surface2:#f2f3f4; --line:rgba(18,22,30,.13); --ink:#171a20; --muted:#5a6270; --accent:#d63a1e; --accent-soft:rgba(214,58,30,.1); --on-accent:#fff5f0; } }
-*{box-sizing:border-box}
-html{scroll-behavior:smooth}
-body{margin:0;font:16px/1.65 var(--sans);background:var(--bg);color:var(--ink);transition:background .3s ease,color .3s ease}
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
-code,kbd,.mono{font-family:var(--mono);font-size:.86em}
-.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
-.skip{position:absolute;left:-9999px}
-.skip:focus{left:16px;top:16px;background:var(--accent);color:var(--on-accent);padding:8px 14px;border-radius:8px;z-index:99}
-.btn{display:inline-flex;align-items:center;gap:8px;font-weight:600;border:1px solid transparent;border-radius:10px;padding:11px 18px;cursor:pointer;transition:transform .15s cubic-bezier(.16,1,.3,1),background .15s ease,box-shadow .15s ease;font-size:15px}
-.btn:active{transform:scale(.98)}
-.btn-p{background:var(--accent);color:#fff}
-.btn-p:hover{box-shadow:0 8px 26px -10px var(--accent)}
-.btn-g{background:transparent;border-color:var(--line);color:var(--ink)}
-.btn-g:hover{border-color:var(--muted)}
-.btn:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-
-/* -------- topbar -------- */
-.top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 0;border-bottom:1px solid var(--line);margin-bottom:28px}
-.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.01em;color:var(--ink)}
-.mark{width:26px;height:26px;border-radius:7px;background:var(--bg2);outline:1px solid var(--line);flex:none}
-.mark span{display:block;margin:5px 4px;height:4px;border-radius:2px}
-.mark .r{background:var(--accent)}
-.nav{display:flex;align-items:center;gap:6px}
-.nav a{color:var(--muted);padding:8px 12px;border-radius:8px;font-size:14px}
-.nav a:hover{color:var(--ink);text-decoration:none;background:var(--surface)}
-.ver{font-family:var(--mono);font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
-.theme-btn{background:none;border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:10px;cursor:pointer;font-size:16px;display:grid;place-items:center}
-
-/* -------- hero -------- */
-.hero{display:grid;grid-template-columns:1.25fr .9fr;gap:48px;align-items:center;padding:48px 0 56px}
-.badge{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:13px;padding:6px 12px;border-radius:999px;margin-bottom:20px}
-.badge i{width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block}
-h1{font-size:clamp(2.1rem,5vw,3.4rem);line-height:1.05;letter-spacing:-.03em;margin:0 0 16px;font-weight:750}
-h1 .acc{color:var(--accent)}
-.hero p.sub{color:var(--muted);max-width:46ch;margin:0 0 26px;font-size:17px}
-.cta{display:flex;gap:12px;flex-wrap:wrap}
-
-.hero-card{position:relative;border:1px solid var(--line);background:linear-gradient(160deg,var(--surface),var(--bg2));border-radius:18px;padding:24px;box-shadow:0 30px 60px -34px rgba(0,0,0,.7)}
-.hero-card h3{margin:0 0 4px;font-size:13px;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);font-weight:600}
-.next-name{font-size:1.25rem;font-weight:650;letter-spacing:-.01em;margin:6px 0 2px;line-height:1.25}
-.next-date{font-family:var(--mono);color:var(--muted);font-size:14px}
-.countdown{display:flex;gap:10px;margin-top:20px}
-.cd{flex:1;border:1px solid var(--line);border-radius:12px;background:var(--bg2);padding:12px 8px;text-align:center}
-.cd b{font-size:1.5rem;display:block;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.cd s{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.12em;text-decoration:none}
-.next-meta{margin-top:18px;padding-top:14px;border-top:1px solid var(--line);font-size:13px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
-
-/* -------- stats -------- */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid var(--line);border-radius:16px;overflow:hidden;margin:8px 0 0;background:var(--surface)}
-.stat{padding:22px 20px;border-left:1px solid var(--line)}
-.stat:first-child{border-left:0}
-.stat b{font-size:2rem;letter-spacing:-.03em;display:block;font-variant-numeric:tabular-nums}
-.stat span{color:var(--muted);font-size:13px}
-.stat .m{font-family:var(--mono);color:var(--accent);font-size:12px;display:block;margin-top:2px}
-
-/* -------- sections -------- */
-section{padding:64px 0}
-.sec-head{margin-bottom:28px}
-.sec-head h2{font-size:clamp(1.4rem,3vw,1.9rem);letter-spacing:-.02em;margin:0 0 8px;font-weight:700}
-.sec-head p{color:var(--muted);max-width:64ch;margin:0}
-
-/* endpoints tiles */
-.ep{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.ep-card{border:1px solid var(--line);border-radius:16px;background:var(--surface);padding:20px;display:flex;flex-direction:column;gap:10px;transition:border-color .2s ease,transform .2s ease}
-.ep-card:hover{border-color:var(--accent);transform:translateY(-2px)}
-.ep-path{font-family:var(--mono);font-weight:600;font-size:14.5px;color:var(--ink)}
-.ep-path .verb{color:var(--ok);font-weight:700;margin-right:8px}
-.ep-desc{color:var(--muted);font-size:14px;flex:1}
-.ep-chips{display:flex;gap:6px;flex-wrap:wrap}
-.chip{font-family:var(--mono);font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
-.chip.req{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
-
-/* playground */
-.panel{border:1px solid var(--line);border-radius:18px;background:var(--bg2);overflow:hidden}
-.panel-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.statusline{font-family:var(--mono);font-size:12px;color:var(--muted)}
-.statusline.ok{color:var(--ok)}
-.statusline.err{color:#ff7a6b}
-.tabs{display:flex;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:4px;flex-wrap:wrap}
-.tab{border:none;background:none;color:var(--muted);padding:8px 14px;border-radius:9px;cursor:pointer;font-weight:600;font-size:14px;font-family:var(--mono)}
-.tab[aria-selected="true"]{background:var(--accent-soft);color:var(--accent)}
-.panel-body{padding:18px}
-.ctl{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:end}
-.field{flex:1;min-width:160px}
-.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.1em}
-.field input,.field select{width:100%;background:var(--surface);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px 12px;font:14px var(--mono)}
-.field input:focus,.field select:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
-.out{position:relative;border:1px solid var(--line);border-radius:12px;background:var(--bg);overflow:auto;max-height:420px}
-.out pre{margin:0;padding:16px 18px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
-.copy-btn{background:var(--surface);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer}
-.copy-btn:hover{color:var(--ink)}
-.bar-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-
-/* data table */
-#data .toolbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
-#data .toolbar button{border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer}
-#data .toolbar button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-soft)}
-.data-tools{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:22px}
-.data-tools input,.data-tools select{flex:1;min-width:180px;background:var(--surface);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px 12px;font:14px var(--sans)}
-.mo-list{list-style:none;margin:0;padding:0;display:grid;gap:0}
-.mo-list li{display:grid;grid-template-columns:110px 120px 1fr auto;gap:14px;align-items:baseline;padding:11px 4px;border-top:1px solid var(--line)}
-.mo-list li:first-child{border-top:0}
-.mo-day{color:var(--muted);font-size:14px}
-.mo-date{color:var(--muted);font-size:13px}
-.mo-name{font-weight:500}
-.mo-head{display:flex;align-items:baseline;justify-content:space-between;margin:26px 0 8px;padding-top:18px;border-top:1px solid var(--line)}
-.mo:first-of-type .mo-head{margin-top:0;padding-top:0;border-top:0}
-.mo-head h3{margin:0;font-size:1.05rem;letter-spacing:-.01em}
-.mo-count{color:var(--muted);font-size:13px}
-.tags{display:flex;gap:6px;justify-content:flex-end}
-.tag{font-size:11px;border-radius:999px;padding:2px 9px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
-.tag-l{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
-.tag-c{color:var(--muted)}
-.empty{border:1px dashed var(--line);border-radius:12px;padding:22px;text-align:center;color:var(--muted)}
-
-/* imsak */
-.imwrap{border:1px solid var(--line);border-radius:16px;background:var(--surface);overflow:hidden}
-.imhead{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.imhead h3{margin:0;font-size:1rem}
-.imhead .muted{color:var(--muted);font-size:13px;font-family:var(--mono)}
-.imtabs{display:flex;gap:4px;flex-wrap:wrap}
-.imtab{border:1px solid var(--line);background:none;color:var(--muted);border-radius:9px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:600}
-.imtab[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-soft)}
-.imtable{width:100%;border-collapse:collapse;font-size:13.5px}
-.imtable th,.imtable td{padding:8px 14px;text-align:left;border-bottom:1px solid var(--line)}
-.imtable th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.08em}
-.imtable th:not(:first-child),.imtable td:not(:first-child){text-align:right}
-.imgoright{overflow:auto}
-
-/* integration */
-.int{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.int-card{border:1px solid var(--line);border-radius:16px;background:var(--surface);padding:20px;display:flex;flex-direction:column;gap:12px}
-.int-card h3{margin:0;font-size:1rem;display:flex;align-items:center;gap:8px}
-.int-card ul{margin:0;padding:0;list-style:none;display:grid;gap:8px}
-.int-card li{color:var(--muted);font-size:14px;display:flex;gap:10px;margin:0}
-.snippet{position:relative;background:var(--bg);border:1px solid var(--line);border-radius:12px}
-.snippet pre{margin:0;padding:14px 46px 14px 16px;white-space:pre;overflow-x:auto;font-size:12.5px;line-height:1.55}
-.snippet button{position:absolute;top:8px;right:8px;background:var(--surface);border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:11px;padding:4px 8px;cursor:pointer}
-
-/* footer */
-.sources{margin:0;padding:0;list-style:none;display:grid;gap:8px;color:var(--muted);font-size:14px}
-footer{border-top:1px solid var(--line);padding:40px 0 56px;color:var(--muted);font-size:13.5px}
-.foot-grid{display:grid;grid-template-columns:1fr 1fr;gap:32px}
-.foot-grid h3{color:var(--ink);font-size:13px;text-transform:uppercase;letter-spacing:.12em;margin:0 0 12px}
-.license{margin-top:28px;padding-top:18px;border-top:1px solid var(--line);font-size:12.5px}
-
-.rv{opacity:0;transform:translateY(14px);transition:opacity .6s cubic-bezier(.16,1,.3,1),transform .6s cubic-bezier(.16,1,.3,1)}
-.rv.in{opacity:1;transform:none}
-html:not(.js) .rv{opacity:1;transform:none}
-@media (prefers-reduced-motion: reduce){
-  .rv{opacity:1;transform:none;transition:none}
-  html{scroll-behavior:auto}
-  .btn,.ep-card,.cd{transition:none}
-}
-@media (max-width:900px){
-  .hero{grid-template-columns:1fr;gap:28px;padding:24px 0 40px}
-  .stats{grid-template-columns:1fr 1fr}
-  .stat:nth-child(3){border-left:0;border-top:1px solid var(--line)}
-  .stat:nth-child(4){border-top:1px solid var(--line)}
-  .ep,.int,.foot-grid{grid-template-columns:1fr}
-  .mo-list li{grid-template-columns:1fr;gap:2px;padding:13px 4px}
-  .mo-list li .tags{justify-content:flex-start}
-  .mo-day{display:none}
-}
-@media (max-width:560px){
-  .stats{grid-template-columns:1fr}
-  .stat{border-left:0;border-top:1px solid var(--line)}
-  .stat:first-child{border-top:0}
-  .nav a:nth-child(2){display:none}
-}
-</style>
-</head>
-<body>
-<a class="skip" href="#main">Langsung ke konten</a>
-<div class="wrap">
-
-<header class="top">
-  <a class="brand" href="/" aria-label="Beranda data libur nasional Indonesia">
-    <span class="mark" aria-hidden="true"><span class="r"></span><span></span><span class="r"></span></span>
-    <span>libur<span style="color:var(--accent)">.id</span></span>
-  </a>
-  <nav class="nav" aria-label="Navigasi utama">
-    <a href="#api">API</a>
-    <a href="#data">Libur ${f.YEAR}</a>
-    <a href="#imsak">Imsakiyah</a>
-    <a href="#pakai">Pakai</a>
-    <span class="ver">v${f.VERSION}</span>
-    <button class="theme-btn" id="themeBtn" aria-label="Ganti tema" title="Ganti tema">◐</button>
-  </nav>
-</header>
-
-<main id="main">
-
-<section class="hero">
-  <div class="rv in">
-    <span class="badge"><i></i> Data resmi · SKB 3 Menteri &amp; Kemenag · v${f.VERSION}</span>
-    <h1>Libur nasional Indonesia, <span class="acc">dalam satu API.</span></h1>
-    <p class="sub">Hari libur, cuti bersama, dan jadwal imsakiyah — JSON murni, gratis, tanpa kunci API. Bisa dipakai dari bahasa pemrograman apa pun.</p>
-    <div class="cta">
-      <a class="btn btn-p" href="#api">Coba API</a>
-      <a class="btn btn-g" href="${f.SITE_URL}/openapi.json">Spesifikasi OpenAPI</a>
-    </div>
-  </div>
-  <aside class="hero-card rv in" aria-label="Libur berikutnya">
-    <h3>Libur berikutnya</h3>
-    <div class="next-name" id="nextName">…</div>
-    <div class="next-date" id="nextDate">…</div>
-    <div class="countdown" id="countdown" aria-label="Hitung mundur">
-      <div class="cd"><b id="cdD">–</b><s>Hari</s></div>
-      <div class="cd"><b id="cdH">–</b><s>Jam</s></div>
-      <div class="cd"><b id="cdM">–</b><s>Menit</s></div>
-      <div class="cd"><b id="cdS">–</b><s>Detik</s></div>
-    </div>
-    <div class="next-meta"><span id="nextSources">Data diperbarui ${f.YEAR}</span><a href="${f.SITE_URL}/api/libur.ics" target="_blank" rel="noopener">Subscribe .ics →</a></div>
-  </aside>
-</section>
-
-<div class="stats rv">
-  <div class="stat"><b>${f.COUNT_LIBUR}</b><span>hari libur nasional</span><span class="m">tahun ${f.YEAR}</span></div>
-  <div class="stat"><b>${f.COUNT_CUTI}</b><span>cuti bersama</span><span class="m">SKB 3 Menteri</span></div>
-  <div class="stat"><b>${f.COUNT_KOTA}</b><span>kota imsakiyah</span><span class="m">Bimas Islam</span></div>
-  <div class="stat"><b>${f.COUNT_TOTAL}</b><span>total tanggal libur</span><span class="m">libur + cuti</span></div>
-</div>
-
-<section id="api">
-  <div class="sec-head rv">
-    <h2>Endpoint</h2>
-    <p>Lima endpoint + health check, semua <code>GET</code>, semuanya punya cache publik. Spesifikasi mesin-terbaca di <a href="/openapi.json"><code>/openapi.json</code></a> (live: <code>/api/openapi.json</code>).</p>
-  </div>
-  <div class="ep rv">
-    <div class="ep-card">
-      <div class="ep-path"><span class="verb">GET</span>/api/libur</div>
-      <div class="ep-desc">Cek satu tanggal, rekap setahun, satu bulan, N libur terdekat, atau rentang tanggal.</div>
-      <div class="ep-chips"><span class="chip req">date=YYYY-MM-DD</span><span class="chip">year=${f.YEAR}</span><span class="chip">month=3</span><span class="chip">next=1&amp;count=3</span><span class="chip">from&amp;to</span><span class="chip">type=all</span><span class="chip">format=csv</span></div>
-    </div>
-    <div class="ep-card">
-      <div class="ep-path"><span class="verb">GET</span>/api/imsak</div>
-      <div class="ep-desc">Jadwal imsakiyah 30 hari Ramadan: imsak, subuh, zuhur, ashar, magrib, isya.</div>
-      <div class="ep-chips"><span class="chip req">city=jakarta</span><span class="chip">year=${f.YEAR}</span><span class="chip">date=${f.YEAR}-03-01</span><span class="chip">format=csv</span></div>
-    </div>
-    <div class="ep-card">
-      <div class="ep-path"><span class="verb">GET</span>/api/kota</div>
-      <div class="ep-desc">Daftar kota beserta provinsi, zona waktu, dan tahun imsakiyah yang tersedia.</div>
-      <div class="ep-chips"><span class="chip">no parameter</span></div>
-    </div>
-    <div class="ep-card">
-      <div class="ep-path"><span class="verb">GET</span>/api/libur.ics</div>
-      <div class="ep-desc">iCalendar (RFC 5545) untuk subscribe ke Google / Apple Calendar.</div>
-      <div class="ep-chips"><span class="chip">year=${f.YEAR}</span><span class="chip">type=all</span><span class="chip">next=1&nbsp;&amp;&nbsp;count=3</span></div>
-    </div>
-  </div>
-</section>
-
-<section id="play">
-  <div class="sec-head rv">
-    <h2>Coba langsung</h2>
-    <p>Playground memanggil API sungguhan di browser kamu. URL ikut terisi otomatis sehingga bisa dibagikan (deep-link).</p>
-  </div>
-  <div class="panel rv">
-    <div class="panel-bar">
-      <div class="tabs" role="tablist" aria-label="Mode playground">
-        <button class="tab" role="tab" id="tab-date" aria-selected="true" data-pane="date-pane" type="button">Libur</button>
-        <button class="tab" role="tab" id="tab-range" aria-selected="false" data-pane="range-pane" type="button">Rentang</button>
-        <button class="tab" role="tab" id="tab-imsak" aria-selected="false" data-pane="imsak-pane" type="button">Imsakiyah</button>
-        <button class="tab" role="tab" id="tab-ics" aria-selected="false" data-pane="ics-pane" type="button">Kalender</button>
-      </div>
-      <div class="bar-actions">
-        <span class="statusline" id="reqStatus" aria-live="polite"></span>
-        <button class="copy-btn" id="copyOut" type="button">Salin response</button>
-        <button class="copy-btn" id="copyCurl" type="button">Salin cURL</button>
-      </div>
-    </div>
-    <div class="panel-body">
-
-      <div id="date-pane" role="tabpanel">
-        <div class="ctl">
-          <div class="field">
-            <label for="dateInput">Tanggal</label>
-            <input id="dateInput" type="date" value="${f.YEAR}-08-17" list="dateList" />
-            <datalist id="dateList">${allEntries.map((e) => `<option value="${esc(e.date)}"></option>`).join("")}</datalist>
-          </div>
-          <div class="field">
-            <label for="dateMode">Mode</label>
-            <select id="dateMode">
-              <option value="date">Cek satu tanggal</option>
-              <option value="year">Seluruh libur setahun</option>
-              <option value="month">Libur satu bulan</option>
-              <option value="next">N libur berikutnya</option>
-            </select>
-          </div>
-          <div class="field" id="monthWrap" hidden>
-            <label for="monthInput">Bulan</label>
-            <select id="monthInput">${MONTHS_ID.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("")}</select>
-          </div>
-          <div class="field" id="countWrap" hidden>
-            <label for="countInput">Jumlah (1–30)</label>
-            <input id="countInput" type="number" min="1" max="30" value="3" />
-          </div>
-          <div class="field">
-            <label for="typeInput">Jenis</label>
-            <select id="typeInput">
-              <option value="all">Semua</option>
-              <option value="libur">Libur nasional</option>
-              <option value="cuti">Cuti bersama</option>
-            </select>
-          </div>
-          <button class="btn btn-p" id="dateGo" type="button">Kirim</button>
-        </div>
-        <div class="out" id="dateOut"><pre id="datePre">Isi tanggal lalu tekan “Kirim”.</pre></div>
-      </div>
-
-      <div id="range-pane" role="tabpanel" hidden>
-        <div class="ctl">
-          <div class="field">
-            <label for="fromInput">Dari</label>
-            <input id="fromInput" type="date" value="${f.YEAR}-03-20" />
-          </div>
-          <div class="field">
-            <label for="toInput">Sampai</label>
-            <input id="toInput" type="date" value="${f.YEAR}-03-24" />
-          </div>
-          <button class="btn btn-p" id="rangeGo" type="button">Kirim</button>
-        </div>
-        <div class="out"><pre id="rangePre">Isi rentang lalu tekan “Kirim”.</pre></div>
-      </div>
-
-      <div id="imsak-pane" role="tabpanel" hidden>
-        <div class="ctl">
-          <div class="field">
-            <label for="imsakCity">Kota</label>
-            <select id="imsakCity">${f.IMSAK_CITY_OPTIONS}</select>
-          </div>
-          <div class="field">
-            <label for="imsakYear">Tahun</label>
-            <select id="imsakYear">${f.YEAR_OPTIONS}</select>
-          </div>
-          <button class="btn btn-p" id="imsakGo" type="button">Kirim</button>
-        </div>
-        <div class="out" id="imsakOut"><pre id="imsakPre">Pilih kota lalu tekan “Kirim”.</pre></div>
-      </div>
-
-      <div id="ics-pane" role="tabpanel" hidden>
-        <div class="ctl">
-          <div class="field">
-            <label for="icsType">Isi kalender</label>
-            <select id="icsType">
-              <option value="all">Libur + cuti bersama</option>
-              <option value="libur">Libur nasional saja</option>
-              <option value="cuti">Cuti bersama saja</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="icsYear">Tahun</label>
-            <select id="icsYear">${f.YEAR_OPTIONS}</select>
-          </div>
-          <button class="btn btn-p" id="icsGo" type="button">Unduh .ics</button>
-        </div>
-        <div class="out"><pre>Klik “Unduh .ics” maka file <code>libur-indonesia.ics</code> akan diunduh. Masukkan ke Google Calendar › Settings › Import &amp; export, atau buka di Apple Calendar.<br/><br/>URL subscribe (untuk kalender yang mendukung):<br/><span id="icsUrl"></span></pre></div>
-      </div>
-
-    </div>
-  </div>
-</section>
-
-<section id="data">
-  <div class="sec-head rv">
-    <h2>Libur nasional &amp; cuti bersama ${f.YEAR}</h2>
-    <p>Cari nama/tanggal, saring per bulan dan jenis. Tautan halaman ikut tersimpan di URL.</p>
-  </div>
-  <div class="data-tools rv">
-    <input id="searchInput" type="search" placeholder="Cari mis. “Idul Fitri” atau “2026-03-…”" aria-label="Cari libur" />
-    <select id="jenisFilter" aria-label="Filter jenis">
-      <option value="all">Semua jenis</option>
-      <option value="libur_nasional">Libur nasional saja</option>
-      <option value="cuti_bersama">Cuti bersama saja</option>
-    </select>
-  </div>
-  <div class="toolbar rv" id="monthFilter" role="group" aria-label="Filter bulan">
-    ${f.TOOLBAR}
-  </div>
-  <div id="liburList" class="rv">
-${f.ROWS_LIBUR}
-  </div>
-  <div class="empty" id="emptyState" hidden>Tidak ada tanggal yang cocok dengan filter. <button class="copy-btn" id="resetFilter" type="button">Atur ulang</button></div>
-</section>
-
-<section id="imsak">
-  <div class="sec-head rv">
-    <h2>Imsakiyah</h2>
-    <p>Jadwal 30 hari Ramadan ${f.YEAR} dari Bimas Islam Kemenag. Waktu berformat <code>HH:MM</code> zona lokal kota masing-masing.</p>
-  </div>
-  <div class="imwrap rv">
-    <div class="imhead">
-      <div>
-        <h3 id="imTitle">${esc(c1.city)}</h3>
-        <span class="muted" id="imSub">${esc(c1.province)} · ${esc(c1.timezone)} · ${esc(c1.hijri)}</span>
-      </div>
-      <div class="imtabs" aria-label="Pilih kota">${f.IMSAK_TABS}</div>
-    </div>
-    <div class="imgoright">
-${f.IMSAK_TABLES}
-    </div>
-  </div>
-</section>
-
-<section id="pakai">
-  <div class="sec-head rv">
-    <h2>Pakai di project kamu</h2>
-    <p>Tiga cara: cURL untuk dashboard sederhana, pustaka Python untuk analisis, atau subscribe kalender untuk tim berbagi hari libur.</p>
-  </div>
-  <div class="int rv">
-    <div class="int-card">
-      <h3>cURL</h3>
-      <ul>
-        <li>Panel monitoring</li>
-        <li>Task scheduler / cron</li>
-      </ul>
-      <div class="snippet">
-<pre>curl "${f.SITE_URL}/api/libur?date=${f.YEAR}-08-17" | python3 -m json.tool</pre>
-        <button type="button" data-copy="curl ${f.SITE_URL}/api/libur?year=${f.YEAR}">Salin</button>
-      </div>
-    </div>
-    <div class="int-card">
-      <h3>Python</h3>
-      <ul>
-        <li>Analisis data / ML</li>
-        <li>Jadwal otomatis</li>
-      </ul>
-      <div class="snippet">
-<pre>from hapilibur import is_libur, imsak, upcoming
-is_libur("${f.YEAR}-08-17")   # True
-upcoming()               # libur terdekat</pre>
-        <button type="button" data-copy="pip install hapilibur&#10;# lihat README untuk pakai dari source">Salin</button>
-      </div>
-    </div>
-    <div class="int-card">
-      <h3>JavaScript / Fetch</h3>
-      <ul>
-        <li>Web app / widget</li>
-        <li>Kalender internal</li>
-      </ul>
-      <div class="snippet">
-<pre>const r = await fetch("/api/libur?date=${f.YEAR}-08-17");
-const data = await r.json();
-// { is_holiday: true, ... }</pre>
-        <button type="button" data-copy="const r = await fetch('${f.SITE_URL}/api/libur?date=${f.YEAR}-08-17'); const data = await r.json(); console.log(data)">Salin</button>
-      </div>
-    </div>
-    <div class="int-card">
-      <h3>Kalender (.ics)</h3>
-      <ul>
-        <li>Subscribe di Google/Apple</li>
-        <li>Share ke seluruh tim</li>
-      </ul>
-      <div class="snippet">
-<pre>${f.SITE_URL}/api/libur.ics?year=${f.YEAR}</pre>
-        <button type="button" data-copy="${f.SITE_URL}/api/libur.ics?year=${f.YEAR}">Salin</button>
-      </div>
-    </div>
-  </div>
-</section>
-
-</main>
-
-<footer>
-  <div class="foot-grid">
-    <div>
-      <h3>Sumber data</h3>
-      <ul class="sources">
-${f.SOURCES}
-        <li>Data bisa berubah sesuai penetapan resmi (revisi SKB). Lihat <a href="${f.SITE_URL}/data/imsak/jakarta-${f.YEAR}.json">contoh imsakiyah raw JSON</a>.</li>
-      </ul>
-    </div>
-    <div>
-      <h3>Repository</h3>
-      <ul class="sources">
-        <li><a href="https://github.com/kiraadityaa/data-libur-nasional-indonesia" rel="noopener" target="_blank">github.com/kiraadityaa/data-libur-nasional-indonesia</a></li>
-        <li><a href="/openapi.json">Spesifikasi OpenAPI</a> · <a href="/api/health">Health check</a> · v${f.VERSION} MIT</li>
-        <li>Buka issue / PR untuk menambah tahun baru — kontribusi disambut.</li>
-      </ul>
-    </div>
-  </div>
-  <p class="license">MIT License · Data publik bersumber dari instansi pemerintah, atribusi tetap dicantumkan. Dibangun tanpa framework — halaman ini statis, data dibundel sebagai JSON.</p>
-</footer>
-
-</div>
-
-<script>
-(function () {
-  "use strict";
-  document.documentElement.classList.add("js");
-  var D = window.__DATA__ || { entries: [], imsak: [], year: "" };
-  var BASE = "";
-  var $ = function (s) { return document.querySelector(s); };
-  var todayWIB = function () {
-    return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-  };
-  var fmt = function (s, o) {
-    return new Intl.DateTimeFormat("id-ID", o).format(new Date(s + "T00:00:00Z"));
-  };
-  var statusEl = $("#reqStatus");
-  var setStatus = function (txt, cls) {
-    if (!statusEl) return;
-    statusEl.textContent = txt;
-    statusEl.className = "statusline" + (cls ? " " + cls : "");
-  };
-
-  /* ---------- next holiday countdown ---------- */
-  function nextIdx() {
-    var t = todayWIB();
-    for (var i = 0; i < D.entries.length; i++) {
-      if (D.entries[i].date >= t) return i;
-    }
-    return -1;
-  }
-  var idx = nextIdx();
-  var nextName = $("#nextName"), nextDate = $("#nextDate");
-  if (idx >= 0) {
-    var e = D.entries[idx];
-    nextName.textContent = e.name;
-    nextDate.textContent = fmt(e.date, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-    var target = new Date(e.date + "T00:00:00Z").getTime();
-    var parts = ["cdD", "cdH", "cdM", "cdS"];
-    var tick = function () {
-      var diff = Math.max(0, target - Date.now());
-      var D2 = Math.floor(diff / 864e5), H = Math.floor(diff % 864e5 / 36e5), M = Math.floor(diff % 36e5 / 6e4), S = Math.floor(diff % 6e4 / 1e3);
-      var vals = [D2, H, M, S];
-      for (var i = 0; i < 4; i++) $("#" + parts[i]).textContent = String(vals[i]).padStart(2, "0");
-    };
-    tick();
-    setInterval(tick, 1000);
-  } else {
-    nextName.textContent = "Kosong dalam jangkauan data";
-    nextDate.textContent = "Tidak ada libur berikutnya untuk data yang tersedia.";
-  }
-
-  /* ---------- theme ---------- */
-  var root = document.documentElement;
-  var saved = null;
-  try { saved = localStorage.getItem("theme"); } catch (e) {}
-  if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
-  $("#themeBtn").addEventListener("click", function () {
-    var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-    root.setAttribute("data-theme", next);
-    try { localStorage.setItem("theme", next); } catch (e) {}
-    $("#themeBtn").textContent = next === "dark" ? "◑" : "◐";
-  });
-
-  /* ---------- reveal on scroll ---------- */
-  var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var items = document.querySelectorAll(".rv");
-  if (reduceMotion || !("IntersectionObserver" in window)) {
-    for (var i = 0; i < items.length; i++) items[i].classList.add("in");
-  } else {
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (en) { if (en.isIntersecting) { en.target.classList.add("in"); io.unobserve(en.target); } });
-    }, { threshold: 0.08 });
-    items.forEach(function (el) { io.observe(el); });
-  }
-
-  /* ---------- playground tabs ---------- */
-  var tabs = document.querySelectorAll(".tab");
-  tabs.forEach(function (tab) {
-    tab.addEventListener("click", function () {
-      tabs.forEach(function (t) { t.setAttribute("aria-selected", "false"); });
-      tab.setAttribute("aria-selected", "true");
-      document.querySelectorAll(".panel-body > div[role=tabpanel]").forEach(function (p) {
-        p.hidden = p.id !== tab.getAttribute("data-pane");
-      });
-    });
-  });
-
-  /* ---------- playground actions ---------- */
-  var lastOut = "";
-  var lastUrl = "";
-  function pretty(obj) {
-    return JSON.stringify(obj, null, 2);
-  }
-  function timedFetch(path, preEl) {
-    var url = BASE + path;
-    lastUrl = url;
-    setStatus("GET " + path + " …", "");
-    preEl.textContent = "GET " + path + " …";
-    var t0 = performance.now();
-    fetch(url).then(function (r) {
-      var ms = Math.round(performance.now() - t0);
-      return r.json().then(function (b) { return { status: r.status, ok: r.ok, ms: ms, body: b }; });
-    }).then(function (x) {
-      preEl.textContent = pretty(x.body);
-      lastOut = pretty(x.body);
-      setStatus(x.status + " · " + x.ms + " ms", x.ok ? "ok" : "err");
-      syncHash();
-    }).catch(function () {
-      preEl.textContent = "Gagal menghubungi API.";
-      lastOut = "Gagal menghubungi API.";
-      setStatus("network error", "err");
-    });
-  }
-  function syncHash() {
-    try {
-      var u = new URL(lastUrl, location.origin);
-      history.replaceState(null, "", "#" + u.pathname.replace(/^\\//, "") + u.search);
-    } catch (e) {}
-  }
-  function buildLiburPath() {
-    var mode = $("#dateMode").value;
-    var date = $("#dateInput").value || todayWIB();
-    var type = $("#typeInput").value || "all";
-    var typeQ = type !== "all" ? "&type=" + type : "";
-    if (mode === "year") return "/api/libur?year=" + D.year + typeQ;
-    if (mode === "month") return "/api/libur?year=" + D.year + "&month=" + $("#monthInput").value + typeQ;
-    if (mode === "next") {
-      var c = Math.min(30, Math.max(1, Number($("#countInput").value) || 1));
-      return "/api/libur?next=1&date=" + date + "&count=" + c + typeQ;
-    }
-    return "/api/libur?date=" + date;
-  }
-  function runDate() { timedFetch(buildLiburPath(), $("#datePre")); }
-  $("#dateGo").addEventListener("click", runDate);
-  $("#dateInput").addEventListener("keydown", function (ev) { if (ev.key === "Enter") runDate(); });
-  $("#dateMode").addEventListener("change", function () {
-    var mode = $("#dateMode").value;
-    $("#dateInput").style.display = mode === "year" ? "none" : "";
-    $("#monthWrap").hidden = mode !== "month";
-    $("#countWrap").hidden = mode !== "next";
-  });
-
-  function runRange() {
-    var a = $("#fromInput").value, b = $("#toInput").value;
-    timedFetch("/api/libur?from=" + a + "&to=" + b, $("#rangePre"));
-  }
-  $("#rangeGo").addEventListener("click", runRange);
-
-  function runImsak() {
-    var city = $("#imsakCity").value, year = $("#imsakYear").value;
-    var url = BASE + "/api/imsak?city=" + city + "&year=" + year;
-    lastUrl = url;
-    setStatus("GET /api/imsak?city=" + city + "&year=" + year + " …", "");
-    $("#imsakPre").textContent = "GET /api/imsak?city=" + city + "&year=" + year + " …";
-    var t0 = performance.now();
-    fetch(url).then(function (r) { return r.json().then(function (b) { return { r: r, b: b }; }); })
-      .then(function (x) {
-        var ms = Math.round(performance.now() - t0);
-        var b = x.b;
-        if (!x.r.ok) {
-          $("#imsakPre").textContent = pretty(b);
-          lastOut = pretty(b);
-          setStatus(x.r.status + " · " + ms + " ms", "err");
-          return;
-        }
-        var head = b.city + " · " + b.province + " · " + b.timezone + " (" + b.hijri + ") — " + b.schedule.length + " hari\\n";
-        var body = head + b.schedule.map(function (s) {
-          return s.day + " " + s.date + "  imsak " + s.imsak + "  subuh " + s.subuh + "  zuhur " + s.zuhur + "  ashar " + s.ashar + "  magrib " + s.magrib + "  isya " + s.isya;
-        }).join("\\n");
-        $("#imsakPre").textContent = body;
-        lastOut = body;
-        setStatus(x.r.status + " · " + ms + " ms", "ok");
-        syncHash();
-      })
-      .catch(function () { $("#imsakPre").textContent = "Gagal menghubungi API."; lastOut = "Gagal menghubungi API."; setStatus("network error", "err"); });
-  }
-  $("#imsakGo").addEventListener("click", runImsak);
-
-  $("#icsGo").addEventListener("click", function () {
-    var type = $("#icsType").value, year = $("#icsYear").value;
-    window.location.href = BASE + "/api/libur.ics?year=" + year + (type !== "all" ? "&type=" + type : "");
-  });
-  $("#icsUrl").textContent = location.origin + "/api/libur.ics?year=" + D.year;
-
-  /* deep-link: #api/libur?date=... */
-  (function () {
-    try {
-      var h = location.hash.replace(/^#\\/?/, "");
-      if (!h) return;
-      var path = "/" + h;
-      if (path.indexOf("/api/libur") === 0 && path.indexOf("from=") < 0 && path.indexOf("city=") < 0) {
-        lastUrl = path;
-        setStatus("GET " + path + " …", "");
-        fetch(path).then(function (r) { return r.json().then(function (b) { return { s: r.status, ok: r.ok, b: b }; }); })
-          .then(function (x) { $("#datePre").textContent = pretty(x.b); lastOut = pretty(x.b); setStatus(x.s, x.ok ? "ok" : "err"); })
-          .catch(function () {});
-      }
-    } catch (e) {}
-  })();
-
-  /* ---------- copy ---------- */
-  function copyText(t) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      return navigator.clipboard.writeText(t);
-    }
-    return new Promise(function (resolve) {
-      var ta = document.createElement("textarea");
-      ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta); ta.select();
-      try { document.execCommand("copy"); } catch (e) {}
-      document.body.removeChild(ta); resolve();
-    });
-  }
-  $("#copyOut").addEventListener("click", function () {
-    var txt = lastOut || "JSON response akan muncul di sini setelah permintaan pertama.";
-    copyText(txt);
-    this.textContent = "Tersalin ✓";
-    var self = this;
-    setTimeout(function () { self.textContent = "Salin response"; }, 1600);
-  });
-  $("#copyCurl").addEventListener("click", function () {
-    var u = lastUrl || (location.origin + "/api/libur?year=" + D.year);
-    var abs = u.indexOf("http") === 0 ? u : location.origin + u;
-    copyText("curl '" + abs + "'");
-    this.textContent = "Tersalin ✓";
-    var self = this;
-    setTimeout(function () { self.textContent = "Salin cURL"; }, 1600);
-  });
-  var cbs = document.querySelectorAll(".snippet button[data-copy]");
-  cbs.forEach(function (b) {
-    b.addEventListener("click", function () {
-      copyText(b.getAttribute("data-copy"));
-      b.textContent = "Tersalin ✓";
-      setTimeout(function () { b.textContent = "Salin"; }, 1600);
-    });
-  });
-
-  /* ---------- data search + filters (dengan deep-link) ---------- */
-  var q = $("#searchInput"), jf = $("#jenisFilter");
-  var months = Array.prototype.slice.call(document.querySelectorAll(".mo"));
-  function currentMonth() {
-    var b = document.querySelector("#monthFilter button[aria-pressed='true']");
-    return b ? b.getAttribute("data-month") : "0";
-  }
-  function applyFilters(push) {
-    var term = (q.value || "").trim().toLowerCase();
-    var jenis = jf.value;
-    var m = currentMonth();
-    var visibleCount = 0;
-    months.forEach(function (sec) {
-      var monthOk = m === "0" || sec.getAttribute("data-month") === m;
-      var visRows = 0;
-      sec.querySelectorAll(".mo-list li").forEach(function (li) {
-        var okJ = jenis === "all" || (li.getAttribute("data-jenis") || "").indexOf(jenis) >= 0;
-        var okS = !term || (li.getAttribute("data-search") || "").indexOf(term) >= 0;
-        var show = monthOk && okJ && okS;
-        li.hidden = !show;
-        if (show) { visRows++; visibleCount++; }
-      });
-      sec.hidden = visRows === 0;
-    });
-    $("#emptyState").hidden = visibleCount !== 0;
-    if (push !== false) {
-      try {
-        var p = new URLSearchParams();
-        if (term) p.set("q", term);
-        if (jenis !== "all") p.set("jenis", jenis);
-        if (m !== "0") p.set("month", m);
-        history.replaceState(null, "", p.toString() ? "#data?" + p.toString() : "#data");
-      } catch (e) {}
-    }
-  }
-  q.addEventListener("input", function () { applyFilters(true); });
-  jf.addEventListener("change", function () { applyFilters(true); });
-  document.querySelectorAll("#monthFilter button").forEach(function (b) {
-    b.addEventListener("click", function () {
-      document.querySelectorAll("#monthFilter button").forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
-      b.setAttribute("aria-pressed", "true");
-      applyFilters(true);
-    });
-  });
-  $("#resetFilter").addEventListener("click", function () {
-    q.value = ""; jf.value = "all";
-    document.querySelectorAll("#monthFilter button").forEach(function (x) { x.setAttribute("aria-pressed", x.getAttribute("data-month") === "0" ? "true" : "false"); });
-    applyFilters(true);
-  });
-  (function () {
-    try {
-      var h = location.hash;
-      if (h.indexOf("#data?") === 0) {
-        var p = new URLSearchParams(h.slice(6));
-        if (p.get("q")) q.value = p.get("q");
-        if (p.get("jenis")) jf.value = p.get("jenis");
-        var mo = p.get("month") || "0";
-        document.querySelectorAll("#monthFilter button").forEach(function (x) { x.setAttribute("aria-pressed", x.getAttribute("data-month") === mo ? "true" : "false"); });
-        applyFilters(false);
-      }
-    } catch (e) {}
-  })();
-
-  /* ---------- imsak tabs ---------- */
-  var imTabs = document.querySelectorAll(".imtab");
-  imTabs.forEach(function (b) {
-    b.addEventListener("click", function () {
-      var slug = b.getAttribute("data-city");
-      imTabs.forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
-      b.setAttribute("aria-pressed", "true");
-      document.querySelectorAll(".imtable[data-city-t]").forEach(function (t) {
-        t.hidden = t.getAttribute("data-city-t") !== slug;
-      });
-      for (var i = 0; i < D.imsak.length; i++) {
-        var c = D.imsak[i];
-        if (c.slug === slug || c.city.toLowerCase().replace(/[^a-z0-9]+/g, "") === slug) {
-          $("#imTitle").textContent = c.city;
-          $("#imSub").textContent = c.province + " · " + c.timezone + " · " + c.hijri + " · " + c.year;
-        }
-      }
-    });
-  });
-
-  /* sync theme button glyph */
-  $("#themeBtn").textContent = root.getAttribute("data-theme") === "dark" ? "◑" : "◐";
-})();
-</script>
-</body>
-</html>
-`;
 }

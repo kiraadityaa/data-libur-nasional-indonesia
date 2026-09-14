@@ -52,4 +52,4 @@ jobs:
         run: npm run build:site
 
       - name: Assert generated files are committed
-        run: git diff --exit-code -- public/index.html public/openapi.json public/sitemap.xml public/manifest.webmanifest
+        run: git diff --exit-code -- public/index.html public/openapi.json public/sitemap.xml public/manifest.webmanifest public/styles.css public/app.js
