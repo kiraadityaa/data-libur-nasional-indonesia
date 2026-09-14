@@ -14,8 +14,8 @@ Live demo dan playground: <https://data-libur-nasional-indonesia.vercel.app> · 
 # 1. Cek satu tanggal via API
 curl "https://data-libur-nasional-indonesia.vercel.app/api/libur?date=2026-08-17"
 
-# 2. Sama via pustaka Python (dari source repo ini)
-pip install .
+# 2. Sama via pustaka Python (PyPI: hapilibur)
+pip install hapilibur
 python -c "from hapilibur import is_libur; print(is_libur('2026-08-17'))"  # True
 
 # 3. Subscribe kalender tim ke Google/Apple Calendar
@@ -80,7 +80,7 @@ curl -o libur-indonesia.ics "https://data-libur-nasional-indonesia.vercel.app/ap
 ## Pustaka Python
 
 ```bash
-pip install .
+pip install hapilibur   # dari PyPI; atau `pip install .` dari source repo ini
 ```
 
 ```python
