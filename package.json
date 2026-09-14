@@ -8,8 +8,9 @@
     "build:site": "node scripts/build-site.mjs",
     "validate": "python3 scripts/validate.py",
     "test": "PYTHONPATH=src python3 -m pytest -q",
+    "test:api": "node scripts/test-api.mjs",
     "cli:smoke": "PYTHONPATH=src python3 -m hapilibur check 2026-08-17 && PYTHONPATH=src python3 -m hapilibur selang 2026-03-20 2026-03-24",
-    "verify": "npm run typecheck && npm run build:site && npm run validate && npm test"
+    "verify": "npm run typecheck && npm run build:site && npm run validate && npm test && npm run test:api"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",

@@ -48,6 +48,9 @@ jobs:
       - name: Typecheck API + lib
         run: npm run typecheck
 
+      - name: API contract tests
+        run: npm run test:api
+
       - name: Generate static site
         run: npm run build:site
 

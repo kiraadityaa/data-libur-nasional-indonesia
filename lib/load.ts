@@ -2,6 +2,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 function resolveDataDir(): string {
+  // Dapat dioverride untuk test: LIBUR_DATA_DIR=/path/ke/data
+  const override = process.env.LIBUR_DATA_DIR;
+  if (override) return override;
   // __dirname = <root>/lib (dev) atau bundel serverless; data selalu di <root>/data.
   // Jaga kompatibilitas CommonJS (tsconfig module=commonjs).
   try {

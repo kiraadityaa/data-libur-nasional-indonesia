@@ -9,6 +9,8 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
     return sendJSON(res, 405, { error: "Method Not Allowed", hint: "Gunakan GET" });
   }
   const libur = loadJson<HolidayFile>("libur-nasional.json");
+  const updatedAt = libur.updated_at;
+  const ageMs = Date.now() - Date.parse(updatedAt);
   return sendJSON(
     res,
     200,
@@ -16,6 +18,8 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
       ok: true,
       version: "0.2.0",
       tahun_tersedia: listYearsHolidays(libur),
+      data_updated_at: updatedAt,
+      data_age_days: Number.isFinite(ageMs) ? Math.max(0, Math.floor(ageMs / 864e5)) : null,
       waktu_wib: new Intl.DateTimeFormat("en-CA", {
         timeZone: "Asia/Jakarta",
         year: "numeric",
