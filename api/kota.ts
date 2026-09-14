@@ -2,9 +2,9 @@ import { VercelRequest, VercelResponse } from "@vercel/node";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR, ImsakFile, loadJson } from "../lib/load";
-import { sendJSON } from "../lib/respond";
+import { errorBody, sendJSON, sendOptions } from "../lib/respond";
 
-const IMSAK_RE = /^([a-z]+)-(\d{4})\.json$/;
+const IMSAK_RE = /^([a-z0-9-]+)-(\d{4})\.json$/;
 
 interface CityInfo {
   city: string;
@@ -13,9 +13,17 @@ interface CityInfo {
   years: number[];
 }
 
+export function titleCaseSlug(slug: string): string {
+  return slug
+    .split("-")
+    .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
 export default function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === "OPTIONS") return sendOptions(res);
   if (req.method !== "GET") {
-    return sendJSON(res, 405, { error: "Method Not Allowed", hint: "Gunakan GET" });
+    return sendJSON(res, 405, errorBody("Method Not Allowed", "Gunakan GET"));
   }
 
   const cities = availableCities();
@@ -53,7 +61,7 @@ function availableCities(): CityInfo[] {
   return [...byCity.values()]
     .map((info) => ({
       ...info,
-      city: info.city.charAt(0).toUpperCase() + info.city.slice(1),
+      city: titleCaseSlug(info.city),
       years: info.years.sort((a, b) => a - b),
     }))
     .sort((a, b) => a.city.localeCompare(b.city));

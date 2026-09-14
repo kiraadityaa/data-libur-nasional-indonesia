@@ -29,7 +29,12 @@ jobs:
       - name: Python CLI smoke
         run: |
           PYTHONPATH=src python -m hapilibur check 2026-08-17
+          PYTHONPATH=src python -m hapilibur check 2026-08-17 --json
           PYTHONPATH=src python -m hapilibur selang 2026-03-20 2026-03-24
+          PYTHONPATH=src python -m hapilibur range 2026-03-20 2026-03-24 --csv
+          PYTHONPATH=src python -m hapilibur bulan 2026 3 --csv
+          PYTHONPATH=src python -m hapilibur kota
+          PYTHONPATH=src python -m hapilibur --version
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -46,5 +51,5 @@ jobs:
       - name: Generate static site
         run: npm run build:site
 
-      - name: Assert generated site is committed
-        run: git diff --exit-code -- public/index.html
+      - name: Assert generated files are committed
+        run: git diff --exit-code -- public/index.html public/openapi.json public/sitemap.xml public/manifest.webmanifest

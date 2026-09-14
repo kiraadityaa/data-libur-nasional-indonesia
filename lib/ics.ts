@@ -12,6 +12,14 @@ function stamp(date: Date): string {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
 
+function hashName(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) {
+    h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(36);
+}
+
 export function holidaysToICS(entries: HolidayEntry[], calendarName: string): string {
   const lines: string[] = [
     "BEGIN:VCALENDAR",
@@ -19,7 +27,7 @@ export function holidaysToICS(entries: HolidayEntry[], calendarName: string): st
     "PRODID:-//data-libur-nasional-indonesia//Hari Libur Indonesia//ID",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    "X-WR-CALNAME:" + calendarName,
+    "X-WR-CALNAME:" + icsEscape(calendarName),
     "X-WR-TIMEZONE:Asia/Jakarta",
   ];
   for (const entry of entries) {
@@ -29,11 +37,13 @@ export function holidaysToICS(entries: HolidayEntry[], calendarName: string): st
     const end = endStamp.toISOString().slice(0, 10).replace(/-/g, "");
     lines.push(
       "BEGIN:VEVENT",
-      `UID:${start}@libur-nasional-indonesia`,
+      `UID:${start}-${hashName(entry.name)}@libur-nasional-indonesia`,
       `DTSTAMP:${stamp(new Date())}`,
       `DTSTART;VALUE=DATE:${start}`,
       `DTEND;VALUE=DATE:${end}`,
       `SUMMARY:${icsEscape(entry.name)}`,
+      `DESCRIPTION:${icsEscape(entry.name + " — Hari libur Indonesia")}`,
+      "TRANSP:TRANSPARENT",
       "END:VEVENT"
     );
   }

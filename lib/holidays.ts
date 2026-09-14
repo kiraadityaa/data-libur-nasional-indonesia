@@ -1,4 +1,4 @@
-import { HolidayEntry, HolidayFile, loadJson } from "./load";
+import { HolidayEntry, HolidayFile } from "./load";
 
 export const IS_DATE = /^\d{4}-\d{2}-\d{2}$/;
 export const IS_YEAR = /^\d{4}$/;
@@ -7,6 +7,16 @@ export function isValidDateString(value: string): boolean {
   if (!IS_DATE.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+/** Normalisasi slug kota: lowercase, hanya [a-z0-9]. */
+export function normalizeCity(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "");
 }
 
 export function isMonth(value: string): boolean {
@@ -57,13 +67,49 @@ export function nextHoliday(
   cuti: HolidayFile,
   fromIso: string
 ): MergedHoliday | null {
-  if (!isValidDateString(fromIso)) return null;
-  for (let year = Number(fromIso.slice(0, 4)); year <= new Date().getUTCFullYear() + 10; year++) {
+  const all = nextHolidays(libur, cuti, fromIso, 1);
+  return all[0] ?? null;
+}
+
+/** N libur berikutnya sejak `fromIso` (inklusif), lintas tahun. Baru di 0.2.0. */
+export function nextHolidays(
+  libur: HolidayFile,
+  cuti: HolidayFile,
+  fromIso: string,
+  count: number
+): MergedHoliday[] {
+  if (!isValidDateString(fromIso)) return [];
+  if (!Number.isInteger(count) || count < 1) return [];
+  const out: MergedHoliday[] = [];
+  const startYear = Number(fromIso.slice(0, 4));
+  const endYear = new Date().getUTCFullYear() + 10;
+  for (let year = startYear; year <= endYear && out.length < count; year++) {
     for (const entry of mergedByYear(libur, cuti, year)) {
-      if (entry.date >= fromIso) return entry;
+      if (entry.date >= fromIso) {
+        out.push(entry);
+        if (out.length >= count) break;
+      }
     }
   }
-  return null;
+  return out;
+}
+
+/** Semua libur dalam rentang inklusif `from..to` (format YYYY-MM-DD). Baru di 0.2.0. */
+export function holidaysBetween(
+  libur: HolidayFile,
+  cuti: HolidayFile,
+  fromIso: string,
+  toIso: string
+): MergedHoliday[] {
+  if (!isValidDateString(fromIso) || !isValidDateString(toIso)) return [];
+  const [from, to] = fromIso <= toIso ? [fromIso, toIso] : [toIso, fromIso];
+  const out: MergedHoliday[] = [];
+  for (let year = Number(from.slice(0, 4)); year <= Number(to.slice(0, 4)); year++) {
+    for (const entry of mergedByYear(libur, cuti, year)) {
+      if (entry.date >= from && entry.date <= to) out.push(entry);
+    }
+  }
+  return out;
 }
 
 export function monthHolidays(

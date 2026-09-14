@@ -88,3 +88,38 @@ def test_available_cities():
 def test_core_files_exposed():
     assert h.LIBUR_FILE == "libur-nasional.json"
     assert h.CUTI_FILE == "cuti-bersama.json"
+
+
+def test_is_libur_include_cuti_flag():
+    # 2026-03-23 adalah cuti bersama, bukan libur nasional
+    assert h.is_libur("2026-03-23") is True
+    assert h.is_libur("2026-03-23", include_cuti=False) is False
+    assert h.is_libur("2026-08-17", include_cuti=False) is True
+
+
+def test_check_detail():
+    d = h.check_detail("2026-08-17")
+    assert d == {
+        "date": "2026-08-17",
+        "name": "Hari Proklamasi Kemerdekaan RI",
+        "jenis": ["libur_nasional"],
+    }
+    assert h.check_detail("2026-06-11") is None
+
+
+def test_month_include_cuti_flag():
+    assert len(h.month(2026, 3)) == 7
+    assert len(h.month(2026, 3, include_cuti=False)) == 3
+
+
+def test_to_csv():
+    csv = h.to_csv([{"date": "2026-08-17", "name": 'Hari "Merdeka"'}])
+    assert csv.splitlines()[0] == "tanggal,nama"
+    assert '2026-08-17,"Hari ""Merdeka"""' in csv
+
+
+def test_invalid_date_message():
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="YYYY-MM-DD"):
+        h.is_libur("tanggal-salah")

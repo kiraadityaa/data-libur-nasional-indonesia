@@ -1,32 +1,51 @@
 #!/usr/bin/env node
 /**
- * Generator halaman statis public/index.html dari data JSON kanonik (data/).
+ * Generator halaman statis public/* dari data JSON kanonik (data/).
  *
  * Jalankan: npm run build:site
  * - Membaca data/libur-nasional.json, data/cuti-bersama.json, data/imsak/*.json
  * - Menyuntik snapshot (tabel, statistik, next-holiday) ke dalam template HTML
- * - Keluaran: public/index.html
+ * - Keluaran: public/index.html, public/openapi.json, public/manifest.webmanifest,
+ *   public/sitemap.xml
  *
  * Halaman yang dihasilkan tetap berfungsi statis; bagian interaktif memanggil
  * /api/* saat disajikan melalui Vercel.
+ *
+ * Design read (design-taste-frontend): developer docs + dataset landing untuk
+ * developer Indonesia — trust-first, restrained. Redesign-preserve: tema
+ * dark/light + sistem visual dipertahankan, yang ditingkatkan adalah fungsi
+ * (search, filter jenis, deep-link, playground lengkap, OpenAPI, PWA).
+ * Dials: VARIANCE 5 / MOTION 3 / DENSITY 5.
  */
-import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA = join(ROOT, "data");
-const OUT = join(ROOT, "public", "index.html");
-const SITE_URL = process.env.SITE_URL ?? "https://data-libur-nasional-indonesia.vercel.app";
+const PUB = join(ROOT, "public");
+const SITE_URL = (process.env.SITE_URL ?? "https://data-libur-nasional-indonesia.vercel.app").replace(/\/$/, "");
+const VERSION = "0.2.0";
 
 function readJson(rel) {
   return JSON.parse(readFileSync(join(DATA, rel), "utf-8"));
 }
 
+/** Escape HTML untuk semua string dari data (anti-XSS). */
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const libur = readJson("libur-nasional.json");
 const cuti = readJson("cuti-bersama.json");
 
-const YEAR = Object.keys(libur.years).sort().pop();
+const YEARS = Object.keys(libur.years).sort();
+const YEAR = YEARS.pop();
 const liburYear = libur.years[YEAR]?.holidays ?? [];
 const cutiYear = cuti.years[YEAR]?.holidays ?? [];
 
@@ -47,7 +66,7 @@ const allEntries = [...merged.values()].sort((a, b) => a.date.localeCompare(b.da
 
 const imsakCities = readdirSync(join(DATA, "imsak"))
   .filter((f) => /\.json$/.test(f))
-  .map((f) => ({ slug: f.replace(".json", ""), payload: readJson(`imsak/${f}`) }))
+  .map((f) => ({ slug: f.replace(/\.json$/, "").replace(/-\d{4}$/, ""), payload: readJson(`imsak/${f}`) }))
   .sort((a, b) => a.payload.city.localeCompare(b.payload.city));
 
 const MONTHS_ID = [
@@ -79,8 +98,8 @@ function rowsLibur() {
     if (entries.length === 0) continue;
     const rows = entries
       .map((e) =>
-        `<li><span class="mo-day">${dayName(e.date)}</span><span class="mo-date mono">${e.date}</span>` +
-        `<span class="mo-name">${e.name}</span>` +
+        `<li data-jenis="${e.jenis.join(" ")}" data-search="${esc((e.date + " " + e.name + " " + dayName(e.date)).toLowerCase())}"><span class="mo-day">${esc(dayName(e.date))}</span><span class="mo-date mono">${esc(e.date)}</span>` +
+        `<span class="mo-name">${esc(e.name)}</span>` +
         `<span class="tags">${e.jenis
           .map((j) => `<span class="tag ${j === "libur_nasional" ? "tag-l" : "tag-c"}">${j === "libur_nasional" ? "Libur nasional" : "Cuti bersama"}</span>`)
           .join("")}</span></li>`
@@ -99,9 +118,9 @@ function rowsImsak(city) {
   return city.payload.schedule
     .map(
       (s) =>
-        `<tr><td class="mono">${s.day}</td><td class="mono">${s.date}</td>` +
-        `<td class="mono">${s.imsak}</td><td class="mono">${s.subuh}</td><td class="mono">${s.zuhur}</td>` +
-        `<td class="mono">${s.ashar}</td><td class="mono">${s.magrib}</td><td class="mono">${s.isya}</td></tr>`
+        `<tr><td class="mono">${s.day}</td><td class="mono">${esc(s.date)}</td>` +
+        `<td class="mono">${esc(s.imsak)}</td><td class="mono">${esc(s.subuh)}</td><td class="mono">${esc(s.zuhur)}</td>` +
+        `<td class="mono">${esc(s.ashar)}</td><td class="mono">${esc(s.magrib)}</td><td class="mono">${esc(s.isya)}</td></tr>`
     )
     .join("\n");
 }
@@ -114,16 +133,79 @@ function sourcesList() {
   return [...seen.values()]
     .map(
       (s) =>
-        `<li>${s.title ?? s.name} — <a href="${s.url}" rel="noopener">sumber resmi</a></li>`
+        `<li>${esc(s.title ?? s.name)} — <a href="${esc(s.url)}" rel="noopener">sumber resmi</a></li>`
     )
     .join("");
 }
 
+function buildOpenApi() {
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "Data Libur Nasional Indonesia",
+      version: VERSION,
+      description:
+        "REST API hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia. JSON murni, gratis, tanpa kunci API. Sumber: SKB 3 Menteri & Bimas Islam Kemenag.",
+      license: { name: "MIT" },
+    },
+    servers: [{ url: SITE_URL }],
+    paths: {
+      "/api/libur": {
+        get: {
+          summary: "Cek libur / rekap tahunan / bulanan / berikutnya / rentang",
+          parameters: [
+            { name: "date", in: "query", schema: { type: "string", format: "date", example: "2026-08-17" } },
+            { name: "year", in: "query", schema: { type: "string", example: "2026" } },
+            { name: "month", in: "query", schema: { type: "string", example: "3" } },
+            { name: "next", in: "query", schema: { type: "string", example: "1" } },
+            { name: "count", in: "query", description: "Jumlah libur berikutnya (1-30)", schema: { type: "integer", minimum: 1, maximum: 30 } },
+            { name: "type", in: "query", schema: { type: "string", enum: ["all", "libur", "cuti"], default: "all" } },
+            { name: "from", in: "query", schema: { type: "string", format: "date" } },
+            { name: "to", in: "query", schema: { type: "string", format: "date" } },
+            { name: "format", in: "query", schema: { type: "string", enum: ["csv"] } },
+          ],
+          responses: { 200: { description: "OK" }, 400: { description: "Parameter salah" }, 404: { description: "Tahun belum tersedia" } },
+        },
+      },
+      "/api/imsak": {
+        get: {
+          summary: "Jadwal imsakiyah 30 hari Ramadan per kota",
+          parameters: [
+            { name: "city", in: "query", required: true, schema: { type: "string", example: "jakarta" } },
+            { name: "year", in: "query", schema: { type: "string", example: "2026" } },
+            { name: "date", in: "query", schema: { type: "string", format: "date" } },
+            { name: "format", in: "query", schema: { type: "string", enum: ["csv"] } },
+          ],
+          responses: { 200: { description: "OK" }, 404: { description: "Kota/tahun belum tersedia" } },
+        },
+      },
+      "/api/kota": { get: { summary: "Daftar kota imsakiyah", responses: { 200: { description: "OK" } } } },
+      "/api/libur.ics": {
+        get: {
+          summary: "Kalender iCalendar (RFC 5545)",
+          parameters: [
+            { name: "year", in: "query", schema: { type: "string", example: "2026" } },
+            { name: "type", in: "query", schema: { type: "string", enum: ["all", "libur", "cuti"] } },
+            { name: "next", in: "query", schema: { type: "string" } },
+            { name: "count", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } },
+            { name: "date", in: "query", schema: { type: "string", format: "date" } },
+          ],
+          responses: { 200: { description: "File .ics" } },
+        },
+      },
+      "/api/health": { get: { summary: "Health check", responses: { 200: { description: "OK" } } } },
+    },
+  };
+}
+
 const snapshot = {
   year: YEAR,
+  years: YEARS.concat([YEAR]).sort(),
+  version: VERSION,
   updated_at: libur.updated_at,
   entries: allEntries,
   imsak: imsakCities.map((c) => ({
+    slug: c.slug,
     city: c.payload.city,
     province: c.payload.province,
     timezone: c.payload.timezone,
@@ -138,26 +220,30 @@ const flags = {
   COUNT_KOTA: imsakCities.length,
   COUNT_TOTAL: allEntries.length,
   YEAR,
+  YEARS: YEARS.concat([YEAR]).sort(),
   ROWS_LIBUR: rowsLibur(),
   CITY_IMSAK_1: imsakCities[0] ?? null,
   SNAPSHOT_JSON: JSON.stringify(snapshot).replace(/</g, "\\u003c"),
   SITE_URL,
+  VERSION,
   SOURCES: sourcesList(),
   TOOLBAR: [
     '<button data-month="0" aria-pressed="true">Semua</button>',
     ...activeMonths().map((m) => `<button data-month="${m}" aria-pressed="false">${MONTHS_SHORT[m - 1]}</button>`),
   ].join("\n    "),
   IMSAK_TABS: imsakCities
-    .map((c) => `<button class="imtab" data-city="${c.slug}">${c.payload.city}</button>`)
+    .map((c, i) => `<button class="imtab" data-city="${esc(c.slug)}" aria-pressed="${i === 0 ? "true" : "false"}">${esc(c.payload.city)}</button>`)
     .join("\n    "),
   IMSAK_TABLES: imsakCities
     .map(
-      (c) =>
-        `<table class="imtable" data-city-t="${c.slug}" hidden>` +
+      (c, i) =>
+        `<table class="imtable" data-city-t="${esc(c.slug)}"${i === 0 ? "" : " hidden"}>` +
         `<thead><tr><th>Hari</th><th>Tanggal</th><th>Imsak</th><th>Subuh</th><th>Zuhur</th><th>Ashar</th><th>Magrib</th><th>Isya</th></tr></thead>` +
         `<tbody>${rowsImsak(c)}</tbody></table>`
     )
     .join("\n"),
+  YEAR_OPTIONS: YEARS.concat([YEAR]).sort().map((y) => `<option${y === YEAR ? " selected" : ""}>${y}</option>`).join(""),
+  IMSAK_CITY_OPTIONS: imsakCities.map((c) => `<option value="${esc(c.slug)}">${esc(c.payload.city)} — ${esc(c.payload.province)}</option>`).join(""),
 };
 
 console.log(`build-site: ${YEAR} · ${liburYear.length} libur · ${cutiYear.length} cuti · ${imsakCities.length} kota`);
@@ -166,8 +252,38 @@ if (!flags.CITY_IMSAK_1) {
 }
 
 const html = render(flags);
-writeFileSync(OUT, html, "utf-8");
+writeFileSync(join(PUB, "index.html"), html, "utf-8");
 console.log(`wrote public/index.html (${(html.length / 1024).toFixed(1)} KiB)`);
+
+const openapi = JSON.stringify(buildOpenApi(), null, 2) + "\n";
+writeFileSync(join(PUB, "openapi.json"), openapi, "utf-8");
+console.log(`wrote public/openapi.json (${(openapi.length / 1024).toFixed(1)} KiB)`);
+
+const manifest = JSON.stringify(
+  {
+    name: "Libur Nasional Indonesia — API hari libur, cuti bersama & imsakiyah",
+    short_name: "libur.id",
+    start_url: "/",
+    display: "standalone",
+    background_color: "#0b0d10",
+    theme_color: "#ff5a3c",
+    description: "Hari libur, cuti bersama, dan jadwal imsakiyah Indonesia — JSON murni, gratis.",
+    icons: [],
+  },
+  null,
+  2
+) + "\n";
+writeFileSync(join(PUB, "manifest.webmanifest"), manifest, "utf-8");
+console.log(`wrote public/manifest.webmanifest`);
+
+const sitemap = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+  `  <url><loc>${SITE_URL}/</loc><lastmod>${String(libur.updated_at).slice(0, 10)}</lastmod></url>\n` +
+  [`api/libur`, `api/imsak`, `api/kota`, `api/libur.ics`, `api/health`, `openapi.json`]
+    .map((p) => `  <url><loc>${SITE_URL}/${p}</loc><lastmod>${String(libur.updated_at).slice(0, 10)}</lastmod></url>`)
+    .join("\n") +
+  `\n</urlset>\n`;
+writeFileSync(join(PUB, "sitemap.xml"), sitemap, "utf-8");
+console.log(`wrote public/sitemap.xml`);
 
 function render(f) {
   const c1 = f.CITY_IMSAK_1.payload;
@@ -180,13 +296,15 @@ function render(f) {
 <meta name="description" content="REST API gratis hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia. Data resmi SKB 3 Menteri dan Bimas Islam Kemenag, format JSON murni, tanpa kunci API." />
 <meta name="robots" content="index, follow" />
 <link rel="canonical" href="${f.SITE_URL}/" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#0b0d10" />
 <meta property="og:title" content="Libur Nasional Indonesia — API hari libur, cuti bersama & imsakiyah" />
 <meta property="og:description" content="Data resmi ${f.YEAR} dalam satu API. JSON murni, gratis, tanpa kunci." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="${f.SITE_URL}/" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23f7f7f5'/%3E%3Crect x='4' y='6' width='16' height='4' rx='1' fill='%23e1451f'/%3E%3Crect x='4' y='14' width='16' height='4' rx='1' fill='%23e1451f'/%3E%3C/svg%3E" />
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"Dataset","name":"Data libur nasional, cuti bersama, dan imsakiyah Indonesia","description":"Hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia","url":"${f.SITE_URL}/","license":"https://opensource.org/licenses/MIT","includedInDataCatalog":{"@type":"DataCatalog","name":"SKB 3 Menteri & Bimas Islam Kemenag"}}
+{"@context":"https://schema.org","@type":"Dataset","name":"Data libur nasional, cuti bersama, dan imsakiyah Indonesia","description":"Hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia","url":"${f.SITE_URL}/","version":"${f.VERSION}","license":"https://opensource.org/licenses/MIT","includedInDataCatalog":{"@type":"DataCatalog","name":"SKB 3 Menteri & Bimas Islam Kemenag"}}
 </script>
 <script>
 window.__DATA__ = ${f.SNAPSHOT_JSON};
@@ -216,7 +334,7 @@ code,kbd,.mono{font-family:var(--mono);font-size:.86em}
 .skip:focus{left:16px;top:16px;background:var(--accent);color:var(--on-accent);padding:8px 14px;border-radius:8px;z-index:99}
 .btn{display:inline-flex;align-items:center;gap:8px;font-weight:600;border:1px solid transparent;border-radius:10px;padding:11px 18px;cursor:pointer;transition:transform .15s cubic-bezier(.16,1,.3,1),background .15s ease,box-shadow .15s ease;font-size:15px}
 .btn:active{transform:scale(.98)}
-.btn-p{background:var(--accent);color:var(--on-accent)}
+.btn-p{background:var(--accent);color:#fff}
 .btn-p:hover{box-shadow:0 8px 26px -10px var(--accent)}
 .btn-g{background:transparent;border-color:var(--line);color:var(--ink)}
 .btn-g:hover{border-color:var(--muted)}
@@ -231,6 +349,7 @@ code,kbd,.mono{font-family:var(--mono);font-size:.86em}
 .nav{display:flex;align-items:center;gap:6px}
 .nav a{color:var(--muted);padding:8px 12px;border-radius:8px;font-size:14px}
 .nav a:hover{color:var(--ink);text-decoration:none;background:var(--surface)}
+.ver{font-family:var(--mono);font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
 .theme-btn{background:none;border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:10px;cursor:pointer;font-size:16px;display:grid;place-items:center}
 
 /* -------- hero -------- */
@@ -280,28 +399,30 @@ section{padding:64px 0}
 /* playground */
 .panel{border:1px solid var(--line);border-radius:18px;background:var(--bg2);overflow:hidden}
 .panel-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.tabs{display:flex;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:4px}
+.statusline{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.statusline.ok{color:var(--ok)}
+.statusline.err{color:#ff7a6b}
+.tabs{display:flex;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:4px;flex-wrap:wrap}
 .tab{border:none;background:none;color:var(--muted);padding:8px 14px;border-radius:9px;cursor:pointer;font-weight:600;font-size:14px;font-family:var(--mono)}
 .tab[aria-selected="true"]{background:var(--accent-soft);color:var(--accent)}
 .panel-body{padding:18px}
-.ctl{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
-.field{flex:1;min-width:180px}
+.ctl{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:end}
+.field{flex:1;min-width:160px}
 .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.1em}
 .field input,.field select{width:100%;background:var(--surface);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px 12px;font:14px var(--mono)}
 .field input:focus,.field select:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
 .out{position:relative;border:1px solid var(--line);border-radius:12px;background:var(--bg);overflow:auto;max-height:420px}
 .out pre{margin:0;padding:16px 18px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
-.out .v{margin:0;padding:16px 18px;font-size:15px}
-.out .v.ok{color:var(--ok)}
-.out .v.no{color:var(--ink)}
-.out .v.err{color:#ff7a6b}
-.copy-btn{position:sticky;top:8px;float:right;margin:8px;background:var(--surface);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer}
+.copy-btn{background:var(--surface);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer}
 .copy-btn:hover{color:var(--ink)}
+.bar-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
 /* data table */
-#data .toolbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:22px}
+#data .toolbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
 #data .toolbar button{border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer}
 #data .toolbar button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-soft)}
+.data-tools{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:22px}
+.data-tools input,.data-tools select{flex:1;min-width:180px;background:var(--surface);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:10px 12px;font:14px var(--sans)}
 .mo-list{list-style:none;margin:0;padding:0;display:grid;gap:0}
 .mo-list li{display:grid;grid-template-columns:110px 120px 1fr auto;gap:14px;align-items:baseline;padding:11px 4px;border-top:1px solid var(--line)}
 .mo-list li:first-child{border-top:0}
@@ -316,13 +437,14 @@ section{padding:64px 0}
 .tag{font-size:11px;border-radius:999px;padding:2px 9px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
 .tag-l{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
 .tag-c{color:var(--muted)}
+.empty{border:1px dashed var(--line);border-radius:12px;padding:22px;text-align:center;color:var(--muted)}
 
 /* imsak */
 .imwrap{border:1px solid var(--line);border-radius:16px;background:var(--surface);overflow:hidden}
 .imhead{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .imhead h3{margin:0;font-size:1rem}
 .imhead .muted{color:var(--muted);font-size:13px;font-family:var(--mono)}
-.imtabs{display:flex;gap:4px}
+.imtabs{display:flex;gap:4px;flex-wrap:wrap}
 .imtab{border:1px solid var(--line);background:none;color:var(--muted);border-radius:9px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:600}
 .imtab[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-soft)}
 .imtable{width:100%;border-collapse:collapse;font-size:13.5px}
@@ -388,6 +510,7 @@ html:not(.js) .rv{opacity:1;transform:none}
     <a href="#data">Libur ${f.YEAR}</a>
     <a href="#imsak">Imsakiyah</a>
     <a href="#pakai">Pakai</a>
+    <span class="ver">v${f.VERSION}</span>
     <button class="theme-btn" id="themeBtn" aria-label="Ganti tema" title="Ganti tema">◐</button>
   </nav>
 </header>
@@ -396,12 +519,12 @@ html:not(.js) .rv{opacity:1;transform:none}
 
 <section class="hero">
   <div class="rv in">
-    <span class="badge"><i></i> Data resmi · SKB 3 Menteri &amp; Kemenag</span>
+    <span class="badge"><i></i> Data resmi · SKB 3 Menteri &amp; Kemenag · v${f.VERSION}</span>
     <h1>Libur nasional Indonesia, <span class="acc">dalam satu API.</span></h1>
     <p class="sub">Hari libur, cuti bersama, dan jadwal imsakiyah — JSON murni, gratis, tanpa kunci API. Bisa dipakai dari bahasa pemrograman apa pun.</p>
     <div class="cta">
       <a class="btn btn-p" href="#api">Coba API</a>
-      <a class="btn btn-g" href="${f.SITE_URL}/data/libur-nasional.json">Unduh JSON</a>
+      <a class="btn btn-g" href="${f.SITE_URL}/openapi.json">Spesifikasi OpenAPI</a>
     </div>
   </div>
   <aside class="hero-card rv in" aria-label="Libur berikutnya">
@@ -428,18 +551,18 @@ html:not(.js) .rv{opacity:1;transform:none}
 <section id="api">
   <div class="sec-head rv">
     <h2>Endpoint</h2>
-    <p>Empat endpoint, semua <code>GET</code>, semuanya punya cache publik. Response di bawah ini <em>live</em> — langsung dari server.</p>
+    <p>Lima endpoint + health check, semua <code>GET</code>, semuanya punya cache publik. Spesifikasi mesin-terbaca di <a href="/openapi.json"><code>/openapi.json</code></a> (live: <code>/api/openapi.json</code>).</p>
   </div>
   <div class="ep rv">
     <div class="ep-card">
       <div class="ep-path"><span class="verb">GET</span>/api/libur</div>
-      <div class="ep-desc">Cek satu tanggal, seluruh libur satu tahun, libur satu bulan, atau libur terdekat.</div>
-      <div class="ep-chips"><span class="chip req">date=YYYY-MM-DD</span><span class="chip">year=2026</span><span class="chip">month=3</span><span class="chip">next=1</span><span class="chip req">format=csv</span></div>
+      <div class="ep-desc">Cek satu tanggal, rekap setahun, satu bulan, N libur terdekat, atau rentang tanggal.</div>
+      <div class="ep-chips"><span class="chip req">date=YYYY-MM-DD</span><span class="chip">year=${f.YEAR}</span><span class="chip">month=3</span><span class="chip">next=1&amp;count=3</span><span class="chip">from&amp;to</span><span class="chip">type=all</span><span class="chip">format=csv</span></div>
     </div>
     <div class="ep-card">
       <div class="ep-path"><span class="verb">GET</span>/api/imsak</div>
       <div class="ep-desc">Jadwal imsakiyah 30 hari Ramadan: imsak, subuh, zuhur, ashar, magrib, isya.</div>
-      <div class="ep-chips"><span class="chip req">city=jakarta</span><span class="chip">year=2026</span><span class="chip">date=2026-03-01</span><span class="chip req">format=csv</span></div>
+      <div class="ep-chips"><span class="chip req">city=jakarta</span><span class="chip">year=${f.YEAR}</span><span class="chip">date=${f.YEAR}-03-01</span><span class="chip">format=csv</span></div>
     </div>
     <div class="ep-card">
       <div class="ep-path"><span class="verb">GET</span>/api/kota</div>
@@ -449,7 +572,7 @@ html:not(.js) .rv{opacity:1;transform:none}
     <div class="ep-card">
       <div class="ep-path"><span class="verb">GET</span>/api/libur.ics</div>
       <div class="ep-desc">iCalendar (RFC 5545) untuk subscribe ke Google / Apple Calendar.</div>
-      <div class="ep-chips"><span class="chip">year=2026</span><span class="chip">type=all</span><span class="chip">next=1&nbsp;&amp;&nbsp;count=3</span></div>
+      <div class="ep-chips"><span class="chip">year=${f.YEAR}</span><span class="chip">type=all</span><span class="chip">next=1&nbsp;&amp;&nbsp;count=3</span></div>
     </div>
   </div>
 </section>
@@ -457,16 +580,21 @@ html:not(.js) .rv{opacity:1;transform:none}
 <section id="play">
   <div class="sec-head rv">
     <h2>Coba langsung</h2>
-    <p>Playground di bawah memanggil API sungguhan di browser kamu. Pilih mode, tekan tombol, dan lihat response aslinya.</p>
+    <p>Playground memanggil API sungguhan di browser kamu. URL ikut terisi otomatis sehingga bisa dibagikan (deep-link).</p>
   </div>
   <div class="panel rv">
     <div class="panel-bar">
       <div class="tabs" role="tablist" aria-label="Mode playground">
         <button class="tab" role="tab" id="tab-date" aria-selected="true" data-pane="date-pane" type="button">Libur</button>
+        <button class="tab" role="tab" id="tab-range" aria-selected="false" data-pane="range-pane" type="button">Rentang</button>
         <button class="tab" role="tab" id="tab-imsak" aria-selected="false" data-pane="imsak-pane" type="button">Imsakiyah</button>
         <button class="tab" role="tab" id="tab-ics" aria-selected="false" data-pane="ics-pane" type="button">Kalender</button>
       </div>
-      <button class="copy-btn" id="copyOut" type="button">Salin response</button>
+      <div class="bar-actions">
+        <span class="statusline" id="reqStatus" aria-live="polite"></span>
+        <button class="copy-btn" id="copyOut" type="button">Salin response</button>
+        <button class="copy-btn" id="copyCurl" type="button">Salin cURL</button>
+      </div>
     </div>
     <div class="panel-body">
 
@@ -474,15 +602,32 @@ html:not(.js) .rv{opacity:1;transform:none}
         <div class="ctl">
           <div class="field">
             <label for="dateInput">Tanggal</label>
-            <input id="dateInput" type="date" value="2026-08-17" list="dateList" />
-            <datalist id="dateList">${allEntries.map((e) => `<option value="${e.date}"></option>`).join("")}</datalist>
+            <input id="dateInput" type="date" value="${f.YEAR}-08-17" list="dateList" />
+            <datalist id="dateList">${allEntries.map((e) => `<option value="${esc(e.date)}"></option>`).join("")}</datalist>
           </div>
           <div class="field">
             <label for="dateMode">Mode</label>
             <select id="dateMode">
               <option value="date">Cek satu tanggal</option>
               <option value="year">Seluruh libur setahun</option>
-              <option value="next">Libur berikutnya</option>
+              <option value="month">Libur satu bulan</option>
+              <option value="next">N libur berikutnya</option>
+            </select>
+          </div>
+          <div class="field" id="monthWrap" hidden>
+            <label for="monthInput">Bulan</label>
+            <select id="monthInput">${MONTHS_ID.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("")}</select>
+          </div>
+          <div class="field" id="countWrap" hidden>
+            <label for="countInput">Jumlah (1–30)</label>
+            <input id="countInput" type="number" min="1" max="30" value="3" />
+          </div>
+          <div class="field">
+            <label for="typeInput">Jenis</label>
+            <select id="typeInput">
+              <option value="all">Semua</option>
+              <option value="libur">Libur nasional</option>
+              <option value="cuti">Cuti bersama</option>
             </select>
           </div>
           <button class="btn btn-p" id="dateGo" type="button">Kirim</button>
@@ -490,15 +635,30 @@ html:not(.js) .rv{opacity:1;transform:none}
         <div class="out" id="dateOut"><pre id="datePre">Isi tanggal lalu tekan “Kirim”.</pre></div>
       </div>
 
+      <div id="range-pane" role="tabpanel" hidden>
+        <div class="ctl">
+          <div class="field">
+            <label for="fromInput">Dari</label>
+            <input id="fromInput" type="date" value="${f.YEAR}-03-20" />
+          </div>
+          <div class="field">
+            <label for="toInput">Sampai</label>
+            <input id="toInput" type="date" value="${f.YEAR}-03-24" />
+          </div>
+          <button class="btn btn-p" id="rangeGo" type="button">Kirim</button>
+        </div>
+        <div class="out"><pre id="rangePre">Isi rentang lalu tekan “Kirim”.</pre></div>
+      </div>
+
       <div id="imsak-pane" role="tabpanel" hidden>
         <div class="ctl">
           <div class="field">
             <label for="imsakCity">Kota</label>
-            <select id="imsakCity">${imsakCities.map((c) => `<option value="${c.slug}">${c.payload.city} — ${c.payload.province}</option>`).join("")}</select>
+            <select id="imsakCity">${f.IMSAK_CITY_OPTIONS}</select>
           </div>
           <div class="field">
             <label for="imsakYear">Tahun</label>
-            <select id="imsakYear"><option>${f.YEAR}</option></select>
+            <select id="imsakYear">${f.YEAR_OPTIONS}</select>
           </div>
           <button class="btn btn-p" id="imsakGo" type="button">Kirim</button>
         </div>
@@ -517,7 +677,7 @@ html:not(.js) .rv{opacity:1;transform:none}
           </div>
           <div class="field">
             <label for="icsYear">Tahun</label>
-            <select id="icsYear"><option>${f.YEAR}</option></select>
+            <select id="icsYear">${f.YEAR_OPTIONS}</select>
           </div>
           <button class="btn btn-p" id="icsGo" type="button">Unduh .ics</button>
         </div>
@@ -531,7 +691,15 @@ html:not(.js) .rv{opacity:1;transform:none}
 <section id="data">
   <div class="sec-head rv">
     <h2>Libur nasional &amp; cuti bersama ${f.YEAR}</h2>
-    <p>Bulan berwarna menandakan ada tanggal libur. Filter untuk menyempitkan.</p>
+    <p>Cari nama/tanggal, saring per bulan dan jenis. Tautan halaman ikut tersimpan di URL.</p>
+  </div>
+  <div class="data-tools rv">
+    <input id="searchInput" type="search" placeholder="Cari mis. “Idul Fitri” atau “2026-03-…”" aria-label="Cari libur" />
+    <select id="jenisFilter" aria-label="Filter jenis">
+      <option value="all">Semua jenis</option>
+      <option value="libur_nasional">Libur nasional saja</option>
+      <option value="cuti_bersama">Cuti bersama saja</option>
+    </select>
   </div>
   <div class="toolbar rv" id="monthFilter" role="group" aria-label="Filter bulan">
     ${f.TOOLBAR}
@@ -539,6 +707,7 @@ html:not(.js) .rv{opacity:1;transform:none}
   <div id="liburList" class="rv">
 ${f.ROWS_LIBUR}
   </div>
+  <div class="empty" id="emptyState" hidden>Tidak ada tanggal yang cocok dengan filter. <button class="copy-btn" id="resetFilter" type="button">Atur ulang</button></div>
 </section>
 
 <section id="imsak">
@@ -549,8 +718,8 @@ ${f.ROWS_LIBUR}
   <div class="imwrap rv">
     <div class="imhead">
       <div>
-        <h3 id="imTitle">${c1.city}</h3>
-        <span class="muted" id="imSub">${c1.province} · ${c1.timezone} · ${c1.hijri}</span>
+        <h3 id="imTitle">${esc(c1.city)}</h3>
+        <span class="muted" id="imSub">${esc(c1.province)} · ${esc(c1.timezone)} · ${esc(c1.hijri)}</span>
       </div>
       <div class="imtabs" aria-label="Pilih kota">${f.IMSAK_TABS}</div>
     </div>
@@ -573,9 +742,8 @@ ${f.IMSAK_TABLES}
         <li>Task scheduler / cron</li>
       </ul>
       <div class="snippet">
-<pre>curl "${f.SITE_URL}/api/libur?date=2026-08-17" \
-  | python3 -m json.tool</pre>
-        <button type="button" data-copy="Semua libur setahun:&#10;curl ${f.SITE_URL}/api/libur?year=${f.YEAR}">Salin</button>
+<pre>curl "${f.SITE_URL}/api/libur?date=${f.YEAR}-08-17" | python3 -m json.tool</pre>
+        <button type="button" data-copy="curl ${f.SITE_URL}/api/libur?year=${f.YEAR}">Salin</button>
       </div>
     </div>
     <div class="int-card">
@@ -586,9 +754,9 @@ ${f.IMSAK_TABLES}
       </ul>
       <div class="snippet">
 <pre>from hapilibur import is_libur, imsak, upcoming
-is_libur("2026-08-17")   # True
+is_libur("${f.YEAR}-08-17")   # True
 upcoming()               # libur terdekat</pre>
-        <button type="button" data-copy="pip install .&#10;# hapilibur -- lihat README">Salin</button>
+        <button type="button" data-copy="pip install hapilibur&#10;# lihat README untuk pakai dari source">Salin</button>
       </div>
     </div>
     <div class="int-card">
@@ -598,10 +766,10 @@ upcoming()               # libur terdekat</pre>
         <li>Kalender internal</li>
       </ul>
       <div class="snippet">
-<pre>const r = await fetch("/api/libur?date=2026-08-17");
+<pre>const r = await fetch("/api/libur?date=${f.YEAR}-08-17");
 const data = await r.json();
 // { is_holiday: true, ... }</pre>
-        <button type="button" data-copy="const r = await fetch('${f.SITE_URL}/api/libur?date=2026-08-17'); const data = await r.json(); console.log(data)">Salin</button>
+        <button type="button" data-copy="const r = await fetch('${f.SITE_URL}/api/libur?date=${f.YEAR}-08-17'); const data = await r.json(); console.log(data)">Salin</button>
       </div>
     </div>
     <div class="int-card">
@@ -633,6 +801,7 @@ ${f.SOURCES}
       <h3>Repository</h3>
       <ul class="sources">
         <li><a href="https://github.com/kiraadityaa/data-libur-nasional-indonesia" rel="noopener" target="_blank">github.com/kiraadityaa/data-libur-nasional-indonesia</a></li>
+        <li><a href="/openapi.json">Spesifikasi OpenAPI</a> · <a href="/api/health">Health check</a> · v${f.VERSION} MIT</li>
         <li>Buka issue / PR untuk menambah tahun baru — kontribusi disambut.</li>
       </ul>
     </div>
@@ -647,13 +816,19 @@ ${f.SOURCES}
   "use strict";
   document.documentElement.classList.add("js");
   var D = window.__DATA__ || { entries: [], imsak: [], year: "" };
-  var BASE = "${f.SITE_URL}";
+  var BASE = "";
   var $ = function (s) { return document.querySelector(s); };
   var todayWIB = function () {
     return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   };
   var fmt = function (s, o) {
     return new Intl.DateTimeFormat("id-ID", o).format(new Date(s + "T00:00:00Z"));
+  };
+  var statusEl = $("#reqStatus");
+  var setStatus = function (txt, cls) {
+    if (!statusEl) return;
+    statusEl.textContent = txt;
+    statusEl.className = "statusline" + (cls ? " " + cls : "");
   };
 
   /* ---------- next holiday countdown ---------- */
@@ -723,42 +898,92 @@ ${f.SOURCES}
 
   /* ---------- playground actions ---------- */
   var lastOut = "";
+  var lastUrl = "";
   function pretty(obj) {
     return JSON.stringify(obj, null, 2);
   }
-  function runDate() {
+  function timedFetch(path, preEl) {
+    var url = BASE + path;
+    lastUrl = url;
+    setStatus("GET " + path + " …", "");
+    preEl.textContent = "GET " + path + " …";
+    var t0 = performance.now();
+    fetch(url).then(function (r) {
+      var ms = Math.round(performance.now() - t0);
+      return r.json().then(function (b) { return { status: r.status, ok: r.ok, ms: ms, body: b }; });
+    }).then(function (x) {
+      preEl.textContent = pretty(x.body);
+      lastOut = pretty(x.body);
+      setStatus(x.status + " · " + x.ms + " ms", x.ok ? "ok" : "err");
+      syncHash();
+    }).catch(function () {
+      preEl.textContent = "Gagal menghubungi API.";
+      lastOut = "Gagal menghubungi API.";
+      setStatus("network error", "err");
+    });
+  }
+  function syncHash() {
+    try {
+      var u = new URL(lastUrl, location.origin);
+      history.replaceState(null, "", "#" + u.pathname.replace(/^\\//, "") + u.search);
+    } catch (e) {}
+  }
+  function buildLiburPath() {
     var mode = $("#dateMode").value;
     var date = $("#dateInput").value || todayWIB();
-    var url = BASE + "/api/libur";
-    if (mode === "year") url += "?year=" + D.year;
-    else if (mode === "next") url += "?next=1&date=" + date;
-    else url += "?date=" + date;
-    $("#datePre").textContent = "GET " + url.slice(BASE.length) + " …";
-    fetch(url).then(function (r) { return r.json().then(function (b) { return { r: r, b: b }; }); })
-      .then(function (x) { $("#datePre").textContent = pretty(x.b); lastOut = pretty(x.b); })
-      .catch(function () { $("#datePre").textContent = "Gagal menghubungi API."; lastOut = "Gagal menghubungi API."; });
+    var type = $("#typeInput").value || "all";
+    var typeQ = type !== "all" ? "&type=" + type : "";
+    if (mode === "year") return "/api/libur?year=" + D.year + typeQ;
+    if (mode === "month") return "/api/libur?year=" + D.year + "&month=" + $("#monthInput").value + typeQ;
+    if (mode === "next") {
+      var c = Math.min(30, Math.max(1, Number($("#countInput").value) || 1));
+      return "/api/libur?next=1&date=" + date + "&count=" + c + typeQ;
+    }
+    return "/api/libur?date=" + date;
   }
+  function runDate() { timedFetch(buildLiburPath(), $("#datePre")); }
   $("#dateGo").addEventListener("click", runDate);
   $("#dateInput").addEventListener("keydown", function (ev) { if (ev.key === "Enter") runDate(); });
   $("#dateMode").addEventListener("change", function () {
     var mode = $("#dateMode").value;
     $("#dateInput").style.display = mode === "year" ? "none" : "";
+    $("#monthWrap").hidden = mode !== "month";
+    $("#countWrap").hidden = mode !== "next";
   });
+
+  function runRange() {
+    var a = $("#fromInput").value, b = $("#toInput").value;
+    timedFetch("/api/libur?from=" + a + "&to=" + b, $("#rangePre"));
+  }
+  $("#rangeGo").addEventListener("click", runRange);
 
   function runImsak() {
     var city = $("#imsakCity").value, year = $("#imsakYear").value;
+    var url = BASE + "/api/imsak?city=" + city + "&year=" + year;
+    lastUrl = url;
+    setStatus("GET /api/imsak?city=" + city + "&year=" + year + " …", "");
     $("#imsakPre").textContent = "GET /api/imsak?city=" + city + "&year=" + year + " …";
-    fetch(BASE + "/api/imsak?city=" + city + "&year=" + year).then(function (r) { return r.json().then(function (b) { return { r: r, b: b }; }); })
+    var t0 = performance.now();
+    fetch(url).then(function (r) { return r.json().then(function (b) { return { r: r, b: b }; }); })
       .then(function (x) {
+        var ms = Math.round(performance.now() - t0);
         var b = x.b;
+        if (!x.r.ok) {
+          $("#imsakPre").textContent = pretty(b);
+          lastOut = pretty(b);
+          setStatus(x.r.status + " · " + ms + " ms", "err");
+          return;
+        }
         var head = b.city + " · " + b.province + " · " + b.timezone + " (" + b.hijri + ") — " + b.schedule.length + " hari\\n";
         var body = head + b.schedule.map(function (s) {
           return s.day + " " + s.date + "  imsak " + s.imsak + "  subuh " + s.subuh + "  zuhur " + s.zuhur + "  ashar " + s.ashar + "  magrib " + s.magrib + "  isya " + s.isya;
         }).join("\\n");
         $("#imsakPre").textContent = body;
         lastOut = body;
+        setStatus(x.r.status + " · " + ms + " ms", "ok");
+        syncHash();
       })
-      .catch(function () { $("#imsakPre").textContent = "Gagal menghubungi API."; lastOut = "Gagal menghubungi API."; });
+      .catch(function () { $("#imsakPre").textContent = "Gagal menghubungi API."; lastOut = "Gagal menghubungi API."; setStatus("network error", "err"); });
   }
   $("#imsakGo").addEventListener("click", runImsak);
 
@@ -766,7 +991,23 @@ ${f.SOURCES}
     var type = $("#icsType").value, year = $("#icsYear").value;
     window.location.href = BASE + "/api/libur.ics?year=" + year + (type !== "all" ? "&type=" + type : "");
   });
-  $("#icsUrl").textContent = BASE + "/api/libur.ics?year=" + D.year;
+  $("#icsUrl").textContent = location.origin + "/api/libur.ics?year=" + D.year;
+
+  /* deep-link: #api/libur?date=... */
+  (function () {
+    try {
+      var h = location.hash.replace(/^#\\/?/, "");
+      if (!h) return;
+      var path = "/" + h;
+      if (path.indexOf("/api/libur") === 0 && path.indexOf("from=") < 0 && path.indexOf("city=") < 0) {
+        lastUrl = path;
+        setStatus("GET " + path + " …", "");
+        fetch(path).then(function (r) { return r.json().then(function (b) { return { s: r.status, ok: r.ok, b: b }; }); })
+          .then(function (x) { $("#datePre").textContent = pretty(x.b); lastOut = pretty(x.b); setStatus(x.s, x.ok ? "ok" : "err"); })
+          .catch(function () {});
+      }
+    } catch (e) {}
+  })();
 
   /* ---------- copy ---------- */
   function copyText(t) {
@@ -788,27 +1029,85 @@ ${f.SOURCES}
     var self = this;
     setTimeout(function () { self.textContent = "Salin response"; }, 1600);
   });
+  $("#copyCurl").addEventListener("click", function () {
+    var u = lastUrl || (location.origin + "/api/libur?year=" + D.year);
+    var abs = u.indexOf("http") === 0 ? u : location.origin + u;
+    copyText("curl '" + abs + "'");
+    this.textContent = "Tersalin ✓";
+    var self = this;
+    setTimeout(function () { self.textContent = "Salin cURL"; }, 1600);
+  });
   var cbs = document.querySelectorAll(".snippet button[data-copy]");
   cbs.forEach(function (b) {
     b.addEventListener("click", function () {
       copyText(b.getAttribute("data-copy"));
       b.textContent = "Tersalin ✓";
-      setTimeout(function () { b.textContent = b.getAttribute("data-copy") ? "Salin" : "Salin"; }, 1600);
+      setTimeout(function () { b.textContent = "Salin"; }, 1600);
     });
   });
 
-  /* ---------- month filter ---------- */
+  /* ---------- data search + filters (dengan deep-link) ---------- */
+  var q = $("#searchInput"), jf = $("#jenisFilter");
   var months = Array.prototype.slice.call(document.querySelectorAll(".mo"));
+  function currentMonth() {
+    var b = document.querySelector("#monthFilter button[aria-pressed='true']");
+    return b ? b.getAttribute("data-month") : "0";
+  }
+  function applyFilters(push) {
+    var term = (q.value || "").trim().toLowerCase();
+    var jenis = jf.value;
+    var m = currentMonth();
+    var visibleCount = 0;
+    months.forEach(function (sec) {
+      var monthOk = m === "0" || sec.getAttribute("data-month") === m;
+      var visRows = 0;
+      sec.querySelectorAll(".mo-list li").forEach(function (li) {
+        var okJ = jenis === "all" || (li.getAttribute("data-jenis") || "").indexOf(jenis) >= 0;
+        var okS = !term || (li.getAttribute("data-search") || "").indexOf(term) >= 0;
+        var show = monthOk && okJ && okS;
+        li.hidden = !show;
+        if (show) { visRows++; visibleCount++; }
+      });
+      sec.hidden = visRows === 0;
+    });
+    $("#emptyState").hidden = visibleCount !== 0;
+    if (push !== false) {
+      try {
+        var p = new URLSearchParams();
+        if (term) p.set("q", term);
+        if (jenis !== "all") p.set("jenis", jenis);
+        if (m !== "0") p.set("month", m);
+        history.replaceState(null, "", p.toString() ? "#data?" + p.toString() : "#data");
+      } catch (e) {}
+    }
+  }
+  q.addEventListener("input", function () { applyFilters(true); });
+  jf.addEventListener("change", function () { applyFilters(true); });
   document.querySelectorAll("#monthFilter button").forEach(function (b) {
     b.addEventListener("click", function () {
       document.querySelectorAll("#monthFilter button").forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
       b.setAttribute("aria-pressed", "true");
-      var m = b.getAttribute("data-month");
-      months.forEach(function (sec) {
-        sec.hidden = !(m === "0" || sec.getAttribute("data-month") === m);
-      });
+      applyFilters(true);
     });
   });
+  $("#resetFilter").addEventListener("click", function () {
+    q.value = ""; jf.value = "all";
+    document.querySelectorAll("#monthFilter button").forEach(function (x) { x.setAttribute("aria-pressed", x.getAttribute("data-month") === "0" ? "true" : "false"); });
+    applyFilters(true);
+  });
+  (function () {
+    try {
+      var h = location.hash;
+      if (h.indexOf("#data?") === 0) {
+        var p = new URLSearchParams(h.slice(6));
+        if (p.get("q")) q.value = p.get("q");
+        if (p.get("jenis")) jf.value = p.get("jenis");
+        var mo = p.get("month") || "0";
+        document.querySelectorAll("#monthFilter button").forEach(function (x) { x.setAttribute("aria-pressed", x.getAttribute("data-month") === mo ? "true" : "false"); });
+        applyFilters(false);
+      }
+    } catch (e) {}
+  })();
 
   /* ---------- imsak tabs ---------- */
   var imTabs = document.querySelectorAll(".imtab");
@@ -822,7 +1121,7 @@ ${f.SOURCES}
       });
       for (var i = 0; i < D.imsak.length; i++) {
         var c = D.imsak[i];
-        if (c.city.toLowerCase().replace(/\\s+/g, "") === slug) {
+        if (c.slug === slug || c.city.toLowerCase().replace(/[^a-z0-9]+/g, "") === slug) {
           $("#imTitle").textContent = c.city;
           $("#imSub").textContent = c.province + " · " + c.timezone + " · " + c.hijri + " · " + c.year;
         }

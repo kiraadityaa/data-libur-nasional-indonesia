@@ -65,6 +65,9 @@ Semua tanggal libur (nasional + cuti bersama) pada bulan Maret 2026.
 ### 4. Libur berikutnya — `GET /api/libur?next=1&date=YYYY-MM-DD`
 
 Libur terdekat sejak tanggal yang diberikan (default: hari ini, zona Asia/Jakarta).
+Tambahkan `&count=3` untuk 3 libur berikutnya (maks 30), dan `&type=libur|cuti|all` untuk memfilter jenis.
+
+### 4b. Rentang tanggal — `GET /api/libur?from=2026-03-20&to=2026-03-24` (baru di 0.2.0)
 
 ### 5. Jadwal imsakiyah — `GET /api/imsak?city=jakarta&year=2026`
 
@@ -93,6 +96,16 @@ curl -o libur-indonesia.ics "https://data-libur-nasional-indonesia.vercel.app/ap
 curl "https://data-libur-nasional-indonesia.vercel.app/api/libur.ics?next=1&count=5&date=2026-06-01"
 ```
 
+### 8. Health & OpenAPI — `GET /api/health`, `GET /api/openapi.json` (baru di 0.2.0)
+
+```bash
+curl https://data-libur-nasional-indonesia.vercel.app/api/health
+curl https://data-libur-nasional-indonesia.vercel.app/api/openapi.json | python3 -m json.tool
+# salinan statis: /openapi.json
+```
+
+Semua endpoint `GET` mendukung `OPTIONS` (preflight CORS) dan mengembalikan error terstandar `{error, hint}`.
+
 ## Library & CLI Python
 
 Instal dari source:
@@ -102,9 +115,11 @@ pip install .
 ```
 
 ```python
-from hapilibur import is_libur, libur, cuti, month, between, imsak, upcoming
+from hapilibur import is_libur, libur, cuti, month, between, imsak, upcoming, check_detail, to_csv
 
 is_libur("2026-08-17")      # True
+is_libur("2026-03-23", include_cuti=False)  # False (itu cuti bersama) — baru di 0.2.0
+check_detail("2026-08-17")  # {'date': ..., 'name': ..., 'jenis': ['libur_nasional']}
 libur(2026)[:2]             # daftar libur nasional
 cuti(2026)                  # daftar cuti bersama
 month(2026, 3)              # semua tanggal libur pada Maret 2026
@@ -122,20 +137,24 @@ CLI:
 
 ```bash
 hapilibur check 2026-08-17          # 2026-08-17: Hari Proklamasi Kemerdekaan RI
+hapilibur check 2026-08-17 --json   # detail {date, name, jenis}
+hapilibur tahun 2026 --csv          # output CSV (juga --json)
 hapilibur tahun 2026                # daftar libur nasional 2026
 hapilibur cuti 2026                 # daftar cuti bersama 2026
 hapilibur bulan 2026 3              # semua tanggal libur bulan Maret
-hapilibur selang 2026-01-01 2026-12-31
-hapilibur upcoming 2026-06-11 -n 3  # 3 libur terdekat
-hapilibur imsak jakarta 2026        # jadwal imsakiyah Jakarta
+hapilibur bulan 2026 3 --tanpa-cuti # hanya libur nasional
+hapilibur selang 2026-01-01 2026-12-31  # alias: range
+hapilibur upcoming 2026-06-11 -n 3  # 3 libur terdekat (alias: next)
+hapilibur imsak jakarta 2026 --json # jadwal imsakiyah Jakarta
 hapilibur kota                      # daftar kota yang tersedia
+hapilibur --version                 # versi package
 ```
 
 ## Pengembangan
 
 ```bash
 npm run typecheck   # tipe API TypeScript
-npm run build:site  # generate public/index.html dari data/ (wajib setelah ubah data)
+npm run build:site  # generate public/index.html + openapi.json + sitemap.xml + manifest (wajib setelah ubah data)
 npm run validate    # python3 scripts/validate.py
 npm test            # pytest (tests/)
 ```

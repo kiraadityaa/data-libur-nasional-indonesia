@@ -9,6 +9,7 @@ from .core import (  # noqa: F401
     available_cities,
     between,
     check,
+    check_detail,
     cuti,
     holiday_range,
     imsak,
@@ -17,7 +18,8 @@ from .core import (  # noqa: F401
     is_libur,
     libur,
     month,
+    to_csv,
     upcoming,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

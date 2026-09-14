@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hapilibur"
-version = "0.1.0"
+version = "0.2.0"
 description = "Dataset & pustaka hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia (2026). Data murni JSON, bebas dipakai lintas bahasa."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,4 +31,4 @@ package-dir = { "" = "src" }
 packages = ["hapilibur"]
 
 [tool.setuptools.package-data]
-hapilibur = ["data/*.json"]
+hapilibur = ["data/*.json", "py.typed"]

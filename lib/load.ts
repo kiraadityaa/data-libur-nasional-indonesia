@@ -1,10 +1,32 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const DATA_DIR = join(process.cwd(), "data");
+function resolveDataDir(): string {
+  // __dirname = <root>/lib (dev) atau bundel serverless; data selalu di <root>/data.
+  // Jaga kompatibilitas CommonJS (tsconfig module=commonjs).
+  try {
+    if (typeof __dirname !== "undefined") return join(__dirname, "..", "data");
+  } catch {
+    // abaikan, fallback ke cwd di bawah
+  }
+  return join(process.cwd(), "data");
+}
+
+export const DATA_DIR = resolveDataDir();
+
+const cache = new Map<string, unknown>();
 
 export function loadJson<T>(relative: string): T {
-  return JSON.parse(readFileSync(join(DATA_DIR, relative), "utf-8")) as T;
+  const hit = cache.get(relative);
+  if (hit !== undefined) return hit as T;
+  const parsed = JSON.parse(readFileSync(join(DATA_DIR, relative), "utf-8")) as T;
+  cache.set(relative, parsed);
+  return parsed;
+}
+
+/** Hapus cache di memori (berguna untuk test). */
+export function clearLoadCache(): void {
+  cache.clear();
 }
 
 export interface HolidayEntry {

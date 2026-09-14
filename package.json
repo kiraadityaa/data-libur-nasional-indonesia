@@ -1,13 +1,14 @@
 {
   "name": "data-libur-nasional-indonesia",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "REST API hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia (2026).",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build:site": "node scripts/build-site.mjs",
     "validate": "python3 scripts/validate.py",
-    "test": "python3 -m pytest -q",
+    "test": "PYTHONPATH=src python3 -m pytest -q",
+    "cli:smoke": "PYTHONPATH=src python3 -m hapilibur check 2026-08-17 && PYTHONPATH=src python3 -m hapilibur selang 2026-03-20 2026-03-24",
     "verify": "npm run typecheck && npm run build:site && npm run validate && npm test"
   },
   "devDependencies": {

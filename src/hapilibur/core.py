@@ -6,18 +6,45 @@ Semua data diambil dari file JSON yang dibundel dalam package
 from __future__ import annotations
 
 import datetime as _dt
+import functools
 import json
 from importlib.resources import files
 
 LIBUR_FILE = "libur-nasional.json"
 CUTI_FILE = "cuti-bersama.json"
 
+__all__ = [
+    "LIBUR_FILE",
+    "CUTI_FILE",
+    "available_cities",
+    "between",
+    "check",
+    "check_detail",
+    "cuti",
+    "holiday_range",
+    "imsak",
+    "imsak_cities_available",
+    "is_holiday",
+    "is_libur",
+    "libur",
+    "month",
+    "to_csv",
+    "upcoming",
+]
+
 _DATE_FMT = "%Y-%m-%d"
 
 
+@functools.lru_cache(maxsize=64)
 def _load(name: str) -> dict:
-    data = files("hapilibur").joinpath("data").joinpath(name).read_text(encoding="utf-8")
-    return json.loads(data)
+    try:
+        data = files("hapilibur").joinpath("data").joinpath(name).read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"File data '{name}' tidak ditemukan di package hapilibur.") from exc
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"File data '{name}' rusak (JSON tidak valid): {exc}") from exc
 
 
 def _parse_date(value: str | _dt.date | _dt.datetime) -> _dt.date:
@@ -25,30 +52,49 @@ def _parse_date(value: str | _dt.date | _dt.datetime) -> _dt.date:
         return value.date()
     if isinstance(value, _dt.date):
         return value
-    return _dt.datetime.strptime(value, _DATE_FMT).date()
+    if not isinstance(value, str):
+        raise TypeError(f"Tanggal harus str/YYYY-MM-DD, date, atau datetime — dapat {type(value).__name__}")
+    text = value.strip()
+    try:
+        return _dt.datetime.strptime(text, _DATE_FMT).date()
+    except ValueError as exc:
+        raise ValueError(f"Tanggal '{value}' tidak valid — gunakan format YYYY-MM-DD (contoh: 2026-08-17).") from exc
 
 
 def _year_entries(name: str, year: int) -> list[dict]:
     """Ambil daftar {date, name} untuk satu tahun dari file JSON dataset."""
+    if not isinstance(year, int) or year < 1 or year > 9999:
+        raise ValueError(f"Tahun '{year}' tidak valid — harus bilangan 1-9999.")
     payload = _load(name)
-    return payload["years"].get(str(year), {}).get("holidays", [])
+    return list(payload.get("years", {}).get(str(year), {}).get("holidays", []))
 
 
 def _dates(name: str, year: int) -> dict[_dt.date, str]:
     return {_parse_date(entry["date"]): entry["name"] for entry in _year_entries(name, year)}
 
 
-def _all_dates(year: int | None = None) -> dict[_dt.date, str]:
-    """Gabungan hari libur nasional + cuti bersama (label tanggal sama ditimpa cuti? tidak — digabung)."""
+def _all_dates(year: int | None = None, include_cuti: bool = True) -> dict[_dt.date, str]:
+    """Gabungan hari libur nasional + (opsional) cuti bersama."""
     year = year or _dt.date.today().year
     merged: dict[_dt.date, str] = {}
     merged.update(_dates(LIBUR_FILE, year))
-    for d, name in _dates(CUTI_FILE, year).items():
-        if d in merged:
-            merged[d] = f"{merged[d]} • {name}"
-        else:
-            merged[d] = name
+    if include_cuti:
+        for d, name in _dates(CUTI_FILE, year).items():
+            if d in merged:
+                merged[d] = f"{merged[d]} • {name}"
+            else:
+                merged[d] = name
     return merged
+
+
+def _kinds(year: int) -> dict[_dt.date, set[str]]:
+    """Petakan tanggal -> {'libur_nasional', 'cuti_bersama'}."""
+    kinds: dict[_dt.date, set[str]] = {}
+    for entry in _year_entries(LIBUR_FILE, year):
+        kinds.setdefault(_parse_date(entry["date"]), set()).add("libur_nasional")
+    for entry in _year_entries(CUTI_FILE, year):
+        kinds.setdefault(_parse_date(entry["date"]), set()).add("cuti_bersama")
+    return kinds
 
 
 def libur(year: int | None = None) -> list[dict]:
@@ -67,7 +113,7 @@ def cuti(year: int | None = None) -> list[dict]:
     return list(_year_entries(CUTI_FILE, year))
 
 
-def month(year: int, month_number: int) -> list[dict]:
+def month(year: int, month_number: int, include_cuti: bool = True) -> list[dict]:
     """Daftar tanggal libur (nasional + cuti bersama) dalam satu bulan sebuah tahun.
 
     ``month_number`` 1-12 (Januari-Desember).
@@ -79,12 +125,16 @@ def month(year: int, month_number: int) -> list[dict]:
         raise ValueError("month_number harus 1-12")
     return [
         {"date": date.isoformat(), "name": name}
-        for date, name in sorted(_all_dates(year).items())
+        for date, name in sorted(_all_dates(year, include_cuti=include_cuti).items())
         if date.year == year and date.month == month_number
     ]
 
 
-def between(start: str | _dt.date | _dt.datetime, end: str | _dt.date | _dt.datetime) -> list[dict]:
+def between(
+    start: str | _dt.date | _dt.datetime,
+    end: str | _dt.date | _dt.datetime,
+    include_cuti: bool = True,
+) -> list[dict]:
     """Daftar tanggal libur (nasional + cuti bersama) dalam rentang tanggal inklusif.
 
     >>> len(between("2026-08-01", "2026-08-31"))  # doctest: +SKIP
@@ -96,7 +146,7 @@ def between(start: str | _dt.date | _dt.datetime, end: str | _dt.date | _dt.date
         start_date, end_date = end_date, start_date
     result: list[dict] = []
     for year in range(start_date.year, end_date.year + 1):
-        for date, name in sorted(_all_dates(year).items()):
+        for date, name in sorted(_all_dates(year, include_cuti=include_cuti).items()):
             if start_date <= date <= end_date:
                 result.append({"date": date.isoformat(), "name": name})
     return result
@@ -110,14 +160,21 @@ def holiday_range(
 
 
 def is_libur(value: str | _dt.date | _dt.datetime, include_cuti: bool = True) -> bool:
-    """True bila ``value`` adalah hari libur nasional (dan opsional cuti bersama)."""
+    """True bila ``value`` adalah hari libur (nasional + opsional cuti bersama).
+
+    .. versionchanged:: 0.2.0
+        Parameter ``include_cuti`` kini benar-benar dihormati
+        (sebelumnya selalu True).
+    """
     tanggal = _parse_date(value)
-    return tanggal in _all_dates(tanggal.year)
+    if include_cuti:
+        return tanggal in _all_dates(tanggal.year, include_cuti=True)
+    return tanggal in _dates(LIBUR_FILE, tanggal.year)
 
 
 def is_holiday(value: str | _dt.date | _dt.datetime) -> bool:
-    """Alias bahasa Inggris dari :func:`is_libur`."""
-    return is_libur(value)
+    """Alias bahasa Inggris dari :func:`is_libur` (termasuk cuti bersama)."""
+    return is_libur(value, include_cuti=True)
 
 
 def check(value: str | _dt.date | _dt.datetime) -> str | None:
@@ -126,10 +183,26 @@ def check(value: str | _dt.date | _dt.datetime) -> str | None:
     return _all_dates(tanggal.year).get(tanggal)
 
 
+def check_detail(value: str | _dt.date | _dt.datetime) -> dict | None:
+    """Detail hari libur: ``{date, name, jenis[]}`` atau ``None``.
+
+    ``jenis`` berisi kombinasi ``libur_nasional`` / ``cuti_bersama``.
+    Baru di 0.2.0.
+    """
+    tanggal = _parse_date(value)
+    name = _all_dates(tanggal.year).get(tanggal)
+    if name is None:
+        return None
+    kinds = sorted(_kinds(tanggal.year).get(tanggal, set()))
+    return {"date": tanggal.isoformat(), "name": name, "jenis": kinds}
+
+
 def upcoming(value: str | _dt.date | _dt.datetime | None = None, n: int = 1) -> dict | list[dict]:
     """Satu atau beberapa hari libur berikutnya (>= tanggal yang diberikan).
 
     ``n=1`` mengembalikan dict; ``n>1`` mengembalikan list dict ber-urutan tanggal.
+    Bila tidak ada data, ``n=1`` mengembalikan ``{"date": None, "name": None}``
+    dan ``n>1`` mengembalikan list kosong.
     """
     if n < 1:
         raise ValueError("n harus >= 1")
@@ -149,13 +222,29 @@ def upcoming(value: str | _dt.date | _dt.datetime | None = None, n: int = 1) -> 
     return found
 
 
+def to_csv(entries: list[dict], jenis_default: str = "libur") -> str:
+    """Ubah daftar ``{date, name}`` menjadi string CSV ``tanggal,nama``.
+
+    Baru di 0.2.0 — untuk CLI ``--csv`` dan analisis cepat.
+    """
+    lines = ["tanggal,nama"]
+    for entry in entries:
+        name = str(entry.get("name", "")).replace('"', '""')
+        lines.append(f"{entry.get('date', '')},\"{name}\"")
+    return "\n".join(lines) + ("\n" if entries else "")
+
+
 def imsak(city: str, year: int | None = None) -> dict:
     """Jadwal imsakiyah (imsak, subuh, zuhur, ashar, magrib, isya) untuk sebuah kota.
 
     ``city`` tidak case-sensitive dan boleh tanpa spasi, contoh: ``"jakarta"``, ``"Surabaya"``.
     """
     year = year or _dt.date.today().year
-    slug = city.strip().lower().replace(" ", "")
+    if not isinstance(year, int) or year < 1 or year > 9999:
+        raise ValueError(f"Tahun '{year}' tidak valid — harus bilangan 1-9999.")
+    slug = "".join(ch for ch in city.strip().lower() if ch.isalnum())
+    if not slug:
+        raise ValueError("Nama kota tidak boleh kosong.")
     try:
         return _load(f"{slug}-{year}.json")
     except FileNotFoundError as exc:
@@ -169,14 +258,18 @@ def available_cities() -> list[str]:
     """Daftar kota yang tersedia pada data imsakiyah."""
     excluded = {LIBUR_FILE[:-5], CUTI_FILE[:-5]}
     cities = set()
-    for name in files("hapilibur").joinpath("data").iterdir():
-        if name.suffix != ".json":
+    try:
+        members = list(files("hapilibur").joinpath("data").iterdir())
+    except FileNotFoundError:
+        return []
+    for member in members:
+        if member.suffix != ".json":
             continue
-        stem = name.stem
+        stem = member.stem
         if stem in excluded:
             continue
-        city, _, year = stem.rpartition("-")
-        if city and year.isdigit():
+        city, sep, year = stem.rpartition("-")
+        if sep and city and year.isdigit():
             cities.add(city.title())
     return sorted(cities)
 
