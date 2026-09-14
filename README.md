@@ -1,51 +1,69 @@
-# 🇮🇩 data-libur-nasional-indonesia
+# data-libur-nasional-indonesia
 
-**Dataset & REST API hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia (2026).**
-Data murni JSON — bisa langsung dipakai di bahasa apa pun, plus pustaka dan CLI Python, plus API gratis.
+Dataset dan REST API hari libur nasional, cuti bersama, dan jadwal imsakiyah Indonesia — 17 libur, 8 cuti bersama, 2 kota (2026). JSON murni, gratis, tanpa kunci API.
 
-[![Python](https://img.shields.io/badge/Python-3.9%2B-blue)](#library--cli-python)
-[![API](https://img.shields.io/badge/API-Vercel-000?logo=vercel)](#rest-api)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue)](#pustaka-python)
 [![CI](https://img.shields.io/github/actions/workflow/status/kiraadityaa/data-libur-nasional-indonesia/ci.yml?label=CI)](https://github.com/kiraadityaa/data-libur-nasional-indonesia/actions)
 [![License](https://img.shields.io/badge/License-MIT-green)](#lisensi)
-![Cuti Bersama 2026](https://img.shields.io/badge/Cuti%20Bersama%202026-8%20hari-9ca3af)
-![Libur Nasional 2026](https://img.shields.io/badge/Libur%20Nasional%202026-17%20hari-38bdf8)
 
----
+Live demo dan playground: <https://data-libur-nasional-indonesia.vercel.app> · Spesifikasi mesin-terbaca: [`/openapi.json`](https://data-libur-nasional-indonesia.vercel.app/openapi.json) · Contoh mentah: [`data/libur-nasional.json`](data/libur-nasional.json)
 
-## Isi
+## Mulai dalam 30 detik
 
-- 17 **hari libur nasional 2026** (SKB 3 Menteri No. 1497, 2, 5 Tahun 2025)
-- 8 **cuti bersama 2026**
-- Jadwal **imsakiyah Ramadan 1447 H / 2026 M** kota **Jakarta** & **Surabaya** (Bimas Islam Kemenag)
-- Library & CLI **Python** (`hapilibur`)
-- **REST API** gratis (Vercel): JSON, CSV, dan iCalendar (.ics)
+```bash
+# 1. Cek satu tanggal via API
+curl "https://data-libur-nasional-indonesia.vercel.app/api/libur?date=2026-08-17"
 
-## Cara pakai data JSON
+# 2. Sama via pustaka Python (dari source repo ini)
+pip install .
+python -c "from hapilibur import is_libur; print(is_libur('2026-08-17'))"  # True
 
-Semua data ada tanpa framework — tinggal unduh dan parse:
+# 3. Subscribe kalender tim ke Google/Apple Calendar
+# https://data-libur-nasional-indonesia.vercel.app/api/libur.ics?year=2026
+```
+
+## Data mentah
+
+Semua data adalah JSON statis tanpa framework — unduh dan parse dari bahasa apa pun.
+
+<details>
+<summary>Daftar file dataset</summary>
 
 | File | Isi |
 |------|-----|
 | [`data/libur-nasional.json`](data/libur-nasional.json) | Hari libur nasional per tahun |
 | [`data/cuti-bersama.json`](data/cuti-bersama.json) | Cuti bersama per tahun |
-| [`data/imsak/jakarta-2026.json`](data/imsak/jakarta-2026.json) | Imsakiyah Jakarta |
-| [`data/imsak/surabaya-2026.json`](data/imsak/surabaya-2026.json) | Imsakiyah Surabaya |
+| [`data/imsak/jakarta-2026.json`](data/imsak/jakarta-2026.json) | Imsakiyah Jakarta (30 hari Ramadan 1447 H) |
+| [`data/imsak/surabaya-2026.json`](data/imsak/surabaya-2026.json) | Imsakiyah Surabaya (30 hari Ramadan 1447 H) |
 
 ```bash
 curl https://raw.githubusercontent.com/kiraadityaa/data-libur-nasional-indonesia/main/data/libur-nasional.json
 ```
 
+</details>
+
 ## REST API
 
-Base URL: `https://data-libur-nasional-indonesia.vercel.app` (dokumentasi interaktif di **`/`**)
+Base URL: `https://data-libur-nasional-indonesia.vercel.app`. Semua endpoint `GET`, cache publik, mendukung preflight `OPTIONS`, dan mengembalikan error terstandar `{error, hint}`.
 
-### 1. Cek satu tanggal — `GET /api/libur?date=YYYY-MM-DD`
+| Endpoint | Guna | Contoh |
+|----------|------|--------|
+| `/api/libur?date=YYYY-MM-DD` | Cek satu tanggal | `?date=2026-08-17` |
+| `/api/libur?year=YYYY` | Rekap setahun (`libur_nasional`, `cuti_bersama`, total) | `?year=2026`, `&format=csv` untuk CSV |
+| `/api/libur?year=YYYY&month=M` | Libur satu bulan | `?year=2026&month=3` |
+| `/api/libur?next=1` | N libur berikutnya (`count` 1–30, default hari ini WIB) | `?next=1&date=2026-06-11&count=3` |
+| `/api/libur?from=&to=` | Rentang tanggal inklusif | `?from=2026-03-20&to=2026-03-24` |
+| `/api/imsak?city=` | Imsakiyah 30 hari (`imsak, subuh, zuhur, ashar, magrib, isya`) | `?city=jakarta&year=2026`, `&date=2026-03-01`, `&format=csv` |
+| `/api/kota` | Daftar kota, provinsi, zona waktu, tahun tersedia | — |
+| `/api/libur.ics` | Kalender iCalendar RFC 5545 | `?year=2026`, `?type=libur`, `?next=1&count=5` |
+| `/api/health` | Health check | — |
 
-```http
-GET /api/libur?date=2026-08-17
-```
+Parameter `type=all|libur|cuti` berlaku untuk `/api/libur` dan `/api/libur.ics`. Dokumentasi lengkap ada di [`/openapi.json`](https://data-libur-nasional-indonesia.vercel.app/openapi.json) (live: `/api/openapi.json`).
+
+Contoh respons:
 
 ```json
+// GET /api/libur?date=2026-08-17
 {
   "date": "2026-08-17",
   "is_holiday": true,
@@ -54,133 +72,72 @@ GET /api/libur?date=2026-08-17
 }
 ```
 
-### 2. Seluruh libur setahun — `GET /api/libur?year=2026`
-
-Response memuat `libur_nasional`, `cuti_bersama`, dan total keduanya. Tambahkan `&format=csv` untuk output CSV (Excel-friendly).
-
-### 3. Libur satu bulan — `GET /api/libur?year=2026&month=3`
-
-Semua tanggal libur (nasional + cuti bersama) pada bulan Maret 2026.
-
-### 4. Libur berikutnya — `GET /api/libur?next=1&date=YYYY-MM-DD`
-
-Libur terdekat sejak tanggal yang diberikan (default: hari ini, zona Asia/Jakarta).
-Tambahkan `&count=3` untuk 3 libur berikutnya (maks 30), dan `&type=libur|cuti|all` untuk memfilter jenis.
-
-### 4b. Rentang tanggal — `GET /api/libur?from=2026-03-20&to=2026-03-24` (baru di 0.2.0)
-
-### 5. Jadwal imsakiyah — `GET /api/imsak?city=jakarta&year=2026`
-
-| Parameter | Contoh |
-|-----------|--------|
-| `city` | `jakarta`, `surabaya` (wajib) |
-| `year` | `2026` |
-| `date` | `2026-03-01` — tampilkan satu hari saja |
-| `format` | `csv` — output CSV |
-
-Setiap item memuat `imsak, subuh, zuhur, ashar, magrib, isya`.
-
-### 6. Daftar kota — `GET /api/kota`
-
-Semua kota beserta provinsi, zona waktu, dan tahun yang tersedia.
-
-### 7. Kalender (.ics) — `GET /api/libur.ics?year=2026`
-
-iCalendar (RFC 5545). Subscribe ke Google / Apple Calendar, atau import file-nya.
-
 ```bash
-# import sekali (Google Calendar → Settings → Import & export)
+# Google Calendar → Settings → Import & export
 curl -o libur-indonesia.ics "https://data-libur-nasional-indonesia.vercel.app/api/libur.ics?year=2026"
-
-# unduh N libur terdekat sebagai kalender satu kali
-curl "https://data-libur-nasional-indonesia.vercel.app/api/libur.ics?next=1&count=5&date=2026-06-01"
 ```
 
-### 8. Health & OpenAPI — `GET /api/health`, `GET /api/openapi.json` (baru di 0.2.0)
-
-```bash
-curl https://data-libur-nasional-indonesia.vercel.app/api/health
-curl https://data-libur-nasional-indonesia.vercel.app/api/openapi.json | python3 -m json.tool
-# salinan statis: /openapi.json
-```
-
-Semua endpoint `GET` mendukung `OPTIONS` (preflight CORS) dan mengembalikan error terstandar `{error, hint}`.
-
-## Library & CLI Python
-
-Instal dari source:
+## Pustaka Python
 
 ```bash
 pip install .
 ```
 
 ```python
-from hapilibur import is_libur, libur, cuti, month, between, imsak, upcoming, check_detail, to_csv
+from hapilibur import check_detail, imsak, is_libur, month, upcoming
 
-is_libur("2026-08-17")      # True
-is_libur("2026-03-23", include_cuti=False)  # False (itu cuti bersama) — baru di 0.2.0
-check_detail("2026-08-17")  # {'date': ..., 'name': ..., 'jenis': ['libur_nasional']}
-libur(2026)[:2]             # daftar libur nasional
-cuti(2026)                  # daftar cuti bersama
-month(2026, 3)              # semua tanggal libur pada Maret 2026
-between("2026-01-01", "2026-12-31")  # rentang tanggal inklusif
-
-jadwal = imsak("jakarta", 2026)
-jadwal["schedule"][0]
+is_libur("2026-08-17")                     # True
+is_libur("2026-03-23", include_cuti=False) # False — itu cuti bersama
+check_detail("2026-08-17")
+# {'date': '2026-08-17', 'name': 'Hari Proklamasi Kemerdekaan RI', 'jenis': ['libur_nasional']}
+month(2026, 3)                             # 7 tanggal (libur + cuti)
+upcoming("2026-06-11", n=3)                # 3 libur terdekat
+imsak("jakarta", 2026)["schedule"][0]
 # {'day': 1, 'date': '2026-02-19', 'imsak': '04:31', 'subuh': '04:41', ...}
-
-upcoming()                  # libur terdekat sejak hari ini (dict)
-upcoming("2026-06-11", n=3) # 3 libur terdekat (list)
 ```
 
-CLI:
+<details>
+<summary>Referensi CLI lengkap</summary>
 
 ```bash
-hapilibur check 2026-08-17          # 2026-08-17: Hari Proklamasi Kemerdekaan RI
-hapilibur check 2026-08-17 --json   # detail {date, name, jenis}
-hapilibur tahun 2026 --csv          # output CSV (juga --json)
-hapilibur tahun 2026                # daftar libur nasional 2026
-hapilibur cuti 2026                 # daftar cuti bersama 2026
-hapilibur bulan 2026 3              # semua tanggal libur bulan Maret
-hapilibur bulan 2026 3 --tanpa-cuti # hanya libur nasional
-hapilibur selang 2026-01-01 2026-12-31  # alias: range
-hapilibur upcoming 2026-06-11 -n 3  # 3 libur terdekat (alias: next)
-hapilibur imsak jakarta 2026 --json # jadwal imsakiyah Jakarta
-hapilibur kota                      # daftar kota yang tersedia
-hapilibur --version                 # versi package
+hapilibur check 2026-08-17            # cek satu tanggal (tambah --json untuk detail)
+hapilibur tahun 2026 [--json|--csv]   # libur nasional setahun
+hapilibur cuti 2026 [--json|--csv]    # cuti bersama setahun
+hapilibur bulan 2026 3 [--tanpa-cuti] # libur satu bulan
+hapilibur selang 2026-01-01 2026-12-31  # rentang inklusif (alias: range)
+hapilibur upcoming 2026-06-11 -n 3    # libur berikutnya (alias: next)
+hapilibur imsak jakarta 2026 [--json] # imsakiyah satu kota
+hapilibur kota                        # kota yang tersedia
+hapilibur --version
 ```
 
-## Pengembangan
+Error input (tanggal salah, kota tak dikenal) keluar sebagai satu baris `Error: ...` dengan exit code 2.
+
+</details>
+
+## English summary
+
+Static JSON dataset and free REST API for Indonesian national holidays, collective leave (*cuti bersama*), and Ramadan prayer times (*imsakiyah*) for Jakarta and Surabaya. Sources: the tri-ministerial decree (SKB 3 Menteri) and the Ministry of Religious Affairs. No API key. Endpoints return JSON, CSV, or iCalendar; a Python library and CLI (`hapilibur`) ship in the same repo. See [Quickstart](#mulai-dalam-30-detik) for copy-paste examples and [`/openapi.json`](https://data-libur-nasional-indonesia.vercel.app/openapi.json) for the full spec.
+
+## Pengembangan dan kontribusi
 
 ```bash
 npm run typecheck   # tipe API TypeScript
-npm run build:site  # generate public/index.html + openapi.json + sitemap.xml + manifest (wajib setelah ubah data)
-npm run validate    # python3 scripts/validate.py
-npm test            # pytest (tests/)
+npm run build:site  # generate public/index.html + openapi.json + sitemap.xml + manifest
+npm run validate    # validasi data JSON
+npm test            # pytest
+npm run verify      # semua di atas, sekali jalan
 ```
 
-Atau sekali jalan: `npm run verify` (typecheck + build:site + validate).
+Menambah tahun baru:
 
-Repro pipeline terotomasi di GitHub Actions: validasi data → pytest → CLI smoke → typecheck → build:site → cek halaman hasil generate sudah ter-commit.
+1. Tambahkan data ke [`data/libur-nasional.json`](data/libur-nasional.json) dan [`data/cuti-bersama.json`](data/cuti-bersama.json).
+2. `npm run validate` — wajib lolos.
+3. `npm run build:site` agar halaman statis tersinkron.
+4. `python3 -m pytest -q` dan `python3 scripts/generate.py` agar salinan di package tersinkron.
+5. Buat pull request.
 
-## Kontribusi data tahun baru
-
-1. Tambahkan data ke [`data/libur-nasional.json`](data/libur-nasional.json) & [`data/cuti-bersama.json`](data/cuti-bersama.json).
-2. Jalankan `npm run validate` — wajib lolos.
-3. Jalankan `npm run build:site` agar halaman statis ikut tersinkron.
-4. Jalankan `python3 -m pytest -q` dan `python3 scripts/generate.py` agar copy di package ikut tersinkron.
-5. Buat pull request. ✨
-
-## Keterbatasan & sumber data
-
-- Data libur mengikuti **SKB 3 Menteri** yang bisa direvisi pemerintah (misal penambahan cuti bersama).
-- Jadwal imsakiyah memakai data **Bimas Islam Kemenag**; Rukyatul Hilal bisa menggeser awal Ramadan, jadi beda ±1 hari dimungkinkan untuk tahun berikutnya.
-- Data **2027** (SKB tahun 2027) akan ditambahkan begitu SKB resmi diumumkan (± September–Oktober 2026).
-
-## Sumber resmi
-
-- [SKB 3 Menteri — Hari Libur Nasional & Cuti Bersama 2026 (PDF)](https://www.kemenkopmk.go.id/sites/default/files/pengumuman/2025-09/SKB%20Libur%20Nasional%20dan%20Cuti%20Bersama%20Tahun%202026.pdf)
-- [Bimas Islam Kementerian Agama RI — jadwal imsakiyah](https://bimasislam.kemenag.go.id)
+Sumber resmi: [SKB 3 Menteri 2026 (PDF)](https://www.kemenkopmk.go.id/sites/default/files/pengumuman/2025-09/SKB%20Libur%20Nasional%20dan%20Cuti%20Bersama%20Tahun%202026.pdf) · [Bimas Islam Kemenag](https://bimasislam.kemenag.go.id). Data mengikuti penetapan pemerintah dan bisa direvisi; awal Ramadan bisa bergeser ±1 hari karena Rukyatul Hilal; data 2027 ditambahkan setelah SKB resmi terbit.
 
 ## Lisensi
 
